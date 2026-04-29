@@ -162,7 +162,7 @@ module gpioemu(
     /* ---------------- Odczyt CPU ---------------- */
 
     always @(*) begin
-        if (srd) begin
+        // if (srd) begin
             case (saddress)
                 16'h0100: sdata_out = arg1[63:32];
                 16'h0108: sdata_out = arg1[31:0];
@@ -174,9 +174,9 @@ module gpioemu(
                 16'h00E0: sdata_out = result[31:0];
                 default:  sdata_out = 32'h0;
             endcase
-        end else begin
-            sdata_out = 32'h0;
-        end
+        // end else begin
+        //     sdata_out = 32'h0;
+        // end
     end
 
     assign gpio_out = gpio_out_s;
