@@ -5,28 +5,34 @@
 
 module gpioemu(
     input           n_reset,
-    input  [15:0]   saddress,        // magistrala - adres
-    input           srd,             // odczyt przez CPU
-    input           swr,             // zapis przez CPU
-    input  [31:0]   sdata_in,        // magistrala wejściowa CPU
-    output [31:0]   sdata_out,       // magistrala wyjściowa do CPU
+    input           clk,
+
+    input  [15:0]   saddress,
+    input           srd,
+    input           swr,
+    input  [31:0]   sdata_in,
+    output reg [31:0] sdata_out,
+
     input  [31:0]   gpio_in,
     input           gpio_latch,
     output [31:0]   gpio_out,
-    input           clk,
+
     output [31:0]   gpio_in_s_insp
 );
 
-    /* ---------------- Rejestry ogólne ---------------- */
+    /* ---------------- Magistrala / debug ---------------- */
 
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
 
+    always @(*) begin
+        sdata_in_s = sdata_in;
+    end
+
     /* ---------------- Sterowanie ---------------- */
 
-    reg        ena;          // LATCHED enable
-    reg [31:0] control;      // rejestr kontrolny (debug)
+    reg ena;   // dokładnie jak u kolegi
 
     /* ---------------- Dane FP ---------------- */
 
@@ -39,66 +45,56 @@ module gpioemu(
 
     /* ---------------- FSM ---------------- */
 
-    reg [1:0] state, next_state;
-    localparam [1:0] IDLE = 2'b00,
-                     CALC = 2'b01,
-                     DONE = 2'b10;
-
-    /* ---------------- Stałe ---------------- */
+    reg [1:0] state, state_next;
+    localparam [1:0]
+        IDLE = 2'd0,
+        CALC = 2'd1,
+        DONE = 2'd2;
 
     localparam [26:0] BIAS = 27'd67108864;
 
     /* ---------------- Detekcja zera ---------------- */
 
-    wire arg1_is_zero = (arg1[27:1] == 27'd0) && (arg1[63:28] == 36'd0);
-    wire arg2_is_zero = (arg2[27:1] == 27'd0) && (arg2[63:28] == 36'd0);
-
-    /* ---------------- Mantysy rozszerzone ---------------- */
+    wire arg1_is_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
+    wire arg2_is_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
 
     wire [73:0] mant1_ext = arg1_is_zero ? 74'd0 : {37'd0, 1'b1, arg1[63:28]};
     wire [73:0] mant2_ext = arg2_is_zero ? 74'd0 : {37'd0, 1'b1, arg2[63:28]};
 
-    /* ============================================================
-       BLOK 1: ZAPISY Z CPU – ZAWSZE AKTYWNE (niezależne od ena)
-       ============================================================ */
+    /* ======================================================
+       ZAPISY Z CPU – IDENTYCZNIE JAK U KOLEGI
+       ====================================================== */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
-            arg1    <= 64'h0;
-            arg2    <= 64'h0;
-            control <= 32'h0;
-            ena     <= 1'b0;
-        end
-        else if (swr) begin
+            arg1 <= 64'h0;
+            arg2 <= 64'h0;
+            ena  <= 1'b0;
+        end else if (swr) begin
             case (saddress)
-                16'h0100: arg1[63:32] <= sdata_in;
-                16'h0108: arg1[31:0]  <= sdata_in;
-                16'h00F0: arg2[63:32] <= sdata_in;
-                16'h00F8: arg2[31:0]  <= sdata_in;
-
-                16'h00D0: begin
-                    control <= sdata_in;
-                    ena     <= sdata_in[0];   // latch enable
-                end
+                16'h0100: arg1[63:32] <= sdata_in_s;
+                16'h0108: arg1[31:0]  <= sdata_in_s;
+                16'h00F0: arg2[63:32] <= sdata_in_s;
+                16'h00F8: arg2[31:0]  <= sdata_in_s;
+                16'h00D0: ena         <= sdata_in_s[0];
                 default: ;
             endcase
         end
     end
 
-    /* ============================================================
-       BLOK 2: FSM I OPERACJE – AKTYWNE TYLKO GDY ena = 1
-       ============================================================ */
+    /* ======================================================
+       FSM – BRAMKOWANY PRZEZ ena (1:1 jak u kolegi)
+       ====================================================== */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
             state     <= IDLE;
             status    <= 32'h0;
             result    <= 64'h0;
-            sign_r    <= 1'b0;
-            exp_sum   <= 28'h0;
             mant_prod <= 74'h0;
+            exp_sum   <= 28'h0;
+            sign_r    <= 1'b0;
             gpio_in_s <= 32'h0;
-        end
-        else if (ena) begin
-            state <= next_state;
+        end else if (ena) begin
+            state <= state_next;
 
             if (gpio_latch)
                 gpio_in_s <= gpio_in;
@@ -119,12 +115,12 @@ module gpioemu(
 
                 DONE: begin
                     status <= 32'h2;
-                    if (arg1_is_zero || arg2_is_zero) begin
+                    if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
-                    end else begin
+                    else begin
                         result[0] <= sign_r;
                         if (mant_prod[73]) begin
-                            result[27:1]  <= exp_sum[26:0] + 27'd1;
+                            result[27:1]  <= exp_sum[26:0] + 1;
                             result[63:28] <= mant_prod[72:37];
                         end else begin
                             result[27:1]  <= exp_sum[26:0];
@@ -132,51 +128,50 @@ module gpioemu(
                         end
                     end
                 end
-                
+
                 default: begin
-                    /* stan nieużywany (2'b11) – bezpieczny fallback */
+                    state  <= IDLE;
                     status <= 32'h0;
                 end
-
             endcase
-        end
-        else begin
-            /* wymuszenie IDLE przy ena = 0 */
+        end else begin
             state  <= IDLE;
             status <= 32'h0;
         end
     end
 
-    /* ---------------- Logika next_state ---------------- */
+    /* ---------------- Next state – jak u kolegi ---------------- */
 
     always @(*) begin
-        next_state = state;
+        state_next = state;
         case (state)
-            IDLE: if (ena) next_state = CALC;
-            CALC:          next_state = DONE;
-            DONE: if (!ena) next_state = IDLE;
-            default:       next_state = IDLE;
+            IDLE:    state_next = CALC;
+            CALC:    state_next = DONE;
+            DONE:    state_next = IDLE;
+            default: state_next = IDLE;
         endcase
     end
 
-    /* ---------------- Odczyt rejestrów ---------------- */
+    /* ---------------- Odczyt CPU ---------------- */
 
-    reg [31:0] read_mux;
     always @(*) begin
-        case (saddress)
-            16'h0100: read_mux = arg1[63:32];
-            16'h0108: read_mux = arg1[31:0];
-            16'h00F0: read_mux = arg2[63:32];
-            16'h00F8: read_mux = arg2[31:0];
-            16'h00D0: read_mux = {31'b0, ena};
-            16'h00E8: read_mux = status;
-            16'h00D8: read_mux = result[63:32];
-            16'h00E0: read_mux = result[31:0];
-            default:  read_mux = 32'h0;
-        endcase
+        if (srd) begin
+            case (saddress)
+                16'h0100: sdata_out = arg1[63:32];
+                16'h0108: sdata_out = arg1[31:0];
+                16'h00F0: sdata_out = arg2[63:32];
+                16'h00F8: sdata_out = arg2[31:0];
+                16'h00D0: sdata_out = {31'b0, ena};
+                16'h00E8: sdata_out = status;
+                16'h00D8: sdata_out = result[63:32];
+                16'h00E0: sdata_out = result[31:0];
+                default:  sdata_out = 32'h0;
+            endcase
+        end else begin
+            sdata_out = 32'h0;
+        end
     end
 
-    assign sdata_out = srd ? read_mux : 32'h0;
     assign gpio_out = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
 
