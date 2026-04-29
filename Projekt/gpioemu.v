@@ -21,6 +21,8 @@ module gpioemu(
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
 
+    reg ena;
+
     reg [63:0] arg1, arg2, result;
     reg [31:0] control, status;
 
@@ -47,6 +49,7 @@ module gpioemu(
             state      <= IDLE;
             status     <= 32'h0;
             control    <= 32'h0;
+            ena <= 1'b0;
             arg1       <= 64'h0;
             arg2       <= 64'h0;
             result     <= 64'h0;
@@ -70,7 +73,12 @@ module gpioemu(
                     16'h0108: arg1[31:0]  <= sdata_in;
                     16'h00F0: arg2[63:32] <= sdata_in;
                     16'h00F8: arg2[31:0]  <= sdata_in;
-                    16'h00D0: control <= sdata_in;
+                    
+                    16'h00D0: begin
+                        control <= sdata_in;
+                        ena     <= sdata_in[0];  // LATCH ENA
+                    end
+
                     default:  ;
                 endcase
             end
@@ -112,11 +120,11 @@ module gpioemu(
     always @(*) begin
         next_state = state;
         case (state)
-            IDLE: if (control == 32'h1) next_state = CALC;
+            IDLE: if (ena) next_state = CALC;
             CALC: next_state = DONE;
             DONE: begin
-                if (control == 32'h0)      next_state = IDLE;
-                else if (control == 32'h1) next_state = CALC;
+                if (!ena)      next_state = IDLE;
+                else           next_state = CALC;
             end
             default: next_state = IDLE;
         endcase
@@ -129,7 +137,7 @@ module gpioemu(
             16'h0108: read_mux = arg1[31:0];
             16'h00F0: read_mux = arg2[63:32];
             16'h00F8: read_mux = arg2[31:0];
-            16'h00D0: read_mux = control;
+            16'h00D0: read_mux = {31'b0, ena}; //control;
             16'h00E8: read_mux = status;
             16'h00D8: read_mux = result[63:32];
             16'h00E0: read_mux = result[31:0];
