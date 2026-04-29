@@ -1,0 +1,7 @@
+Projekt/libgpioemu.a
+Projekt/qemu-system-riscv32-sykt
+*.o
+*.ko
+*.elf
+Image
+rootfs.ext2
