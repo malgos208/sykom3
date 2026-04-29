@@ -17,9 +17,7 @@ module gpioemu(
     output [31:0]   gpio_in_s_insp
 );
 
-    /* =====================================================
-       BUFOROWANIE MAGISTRALI / GPIO (KONTRAKT SYKOM)
-       ===================================================== */
+    //BUFOROWANIE MAGISTRALI / GPIO (KONTRAKT SYKOM)
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
@@ -38,22 +36,16 @@ module gpioemu(
             gpio_in_s <= gpio_in;
     end
 
-    /* =====================================================
-       REJESTRY DANYCH FP
-       ===================================================== */
+    //REJESTRY DANYCH FP
     reg [63:0] arg1;
     reg [63:0] arg2;
     reg [63:0] result;
 
-    /* =====================================================
-       REJESTRY STERUJĄCE I STATUS
-       ===================================================== */
+    //REJESTRY STERUJĄCE I STATUS
     reg        ena;              // start / ack
     reg [31:0] status;           // 0=idle, 1=busy, 2=done
 
-    /* =====================================================
-       FSM
-       ===================================================== */
+    // FSM
     reg [1:0] state;
 
     localparam IDLE = 2'd0;
@@ -72,9 +64,7 @@ module gpioemu(
     reg [27:0] exp_sum;
     reg [73:0] mant_prod;
 
-    /* =====================================================
-       ZAPIS Z CPU — ZDARZENIOWO (posedge swr)
-       ===================================================== */
+    //ZAPIS Z CPU — ZDARZENIOWO (posedge swr)
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
             arg1 <= 64'h0;
@@ -92,9 +82,7 @@ module gpioemu(
         end
     end
 
-    /* =====================================================
-       FSM + OBLICZENIA (clk)
-       ===================================================== */
+    // FSM + OBLICZENIA (clk)
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
             state  <= IDLE;
@@ -148,9 +136,7 @@ module gpioemu(
         end
     end
 
-    /* =====================================================
-       ODCZYT Z CPU — ZDARZENIOWO (posedge srd)
-       ===================================================== */
+    //ODCZYT Z CPU — ZDARZENIOWO (posedge srd)
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
             sdata_out <= 32'h0;
