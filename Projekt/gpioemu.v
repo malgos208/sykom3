@@ -54,6 +54,7 @@ module gpioemu(
 
     localparam [26:0] BIAS = 27'd67108864;
 
+    // Wykrywanie 0: E=0 i M=0 (specjalny wzorzec)
     wire arg1_is_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
     wire arg2_is_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
 
@@ -100,11 +101,14 @@ module gpioemu(
                     status    <= 32'h1;   // BUSY
 
                     mant_prod <= mant1_ext * mant2_ext;
-                    exp_sum   <= {1'b0, arg1[27:1]} +
-                                 {1'b0, arg2[27:1]} -
-                                 {1'b0, BIAS};
+                    exp_sum   <= {1'b0, arg1[27:1]} + {1'b0, arg2[27:1]} - {1'b0, BIAS};
                     sign_r    <= arg1[0] ^ arg2[0];
 
+                    state <= DONE;
+                end
+
+                DONE: begin
+                    status <= 32'h2;   // DONE
                     /* ==== ZAPIS WYNIKU (TYLKO RAZ!) ==== */
                     if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
@@ -118,12 +122,6 @@ module gpioemu(
                             result[63:28] <= mant_prod[71:36];
                         end
                     end
-
-                    state <= DONE;
-                end
-
-                DONE: begin
-                    status <= 32'h2;   // DONE
                     if (!ena)
                         state <= IDLE; // ACK od software
                 end
