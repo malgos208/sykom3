@@ -216,12 +216,15 @@ static ssize_t a2stma_write(struct file *f, const char __user *b, size_t c, loff
 
 static ssize_t ctstma_write(struct file *f, const char __user *ubuf, size_t count, loff_t *ppos)
 {
-    printk(KERN_INFO "WRITE CTRL addr=%p val=%ld\n", ctrl, cmd);
     char kbuf[16];
     long cmd;
+
     if (count >= sizeof(kbuf)) return -ENOSPC;
     if (copy_from_user(kbuf, ubuf, count)) return -EFAULT;
     kbuf[count] = '\0';
+
+    printk(KERN_INFO "WRITE CTRL addr=%p val=%ld\n", ctrl, cmd);
+
     if (kstrtol(kbuf, 10, &cmd) || cmd != CTRL_START) return -EINVAL;
     iowrite32(CTRL_START, ctrl);
     *ppos += count;
