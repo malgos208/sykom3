@@ -214,19 +214,35 @@ static ssize_t a1stma_write(struct file *f, const char __user *b, size_t c, loff
 static ssize_t a2stma_write(struct file *f, const char __user *b, size_t c, loff_t *p)
 { return arg_write(f, b, c, p, arg2_h, arg2_l); }
 
-static ssize_t ctstma_write(struct file *f, const char __user *ubuf, size_t count, loff_t *ppos)
+static ssize_t ctstma_write(struct file *f,
+                            const char __user *ubuf,
+                            size_t count, loff_t *ppos)
 {
     char kbuf[16];
     long cmd;
 
-    if (count >= sizeof(kbuf)) return -ENOSPC;
-    if (copy_from_user(kbuf, ubuf, count)) return -EFAULT;
+    if (count >= sizeof(kbuf))
+        return -ENOSPC;
+    if (copy_from_user(kbuf, ubuf, count))
+        return -EFAULT;
+
     kbuf[count] = '\0';
+
+    if (kstrtol(kbuf, 10, &cmd))
+        return -EINVAL;
 
     printk(KERN_INFO "WRITE CTRL addr=%p val=%ld\n", ctrl, cmd);
 
-    if (kstrtol(kbuf, 10, &cmd) || cmd != CTRL_START) return -EINVAL;
-    iowrite32(CTRL_START, ctrl);
+    /* AKCEPTUJEMY 0 i 1 */
+    if (cmd == 0) {
+        iowrite32(0, ctrl);          /* reset FSM */
+    } else if (cmd == 1) {
+        iowrite32(0, ctrl);          /* reset */
+        iowrite32(1, ctrl);          /* start */
+    } else {
+        return -EINVAL;
+    }
+
     *ppos += count;
     return count;
 }
