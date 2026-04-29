@@ -147,7 +147,14 @@ module gpioemu(
         case (state)
             IDLE:    state_next = CALC;
             CALC:    state_next = DONE;
-            DONE:    if (!ena) state_next = IDLE; // STICKY DONE
+
+            DONE: begin
+                if (!ena)
+                    state_next = IDLE;   // software resetuje DONE
+                else
+                    state_next = DONE;   // DONE STICKY
+            end
+
             default: state_next = IDLE;
         endcase
     end
