@@ -5,20 +5,20 @@
 
 module gpioemu(
     input           n_reset,
-    input  [15:0]   saddress,      // adres relatywny
-    input           srd,            // odczyt (zbocze!)
-    input           swr,            // zapis  (zbocze!)
-    input  [31:0]   sdata_in,       // dane z CPU
-    output reg [31:0] sdata_out,    // dane do CPU
+    input  [15:0]   saddress,
+    input           srd,
+    input           swr,
+    input  [31:0]   sdata_in,
+    output reg [31:0] sdata_out,
     input  [31:0]   gpio_in,
     input           gpio_latch,
     output [31:0]   gpio_out,
-    input           clk,            // zegar 1 kHz
+    input           clk,
     output [31:0]   gpio_in_s_insp
 );
 
     /* =====================================================
-       BUFOROWANIE MAGISTRALI / GPIO (WYMAGANE)
+       BUFOROWANIE MAGISTRALI / GPIO (KONTRAKT SYKOM)
        ===================================================== */
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
@@ -28,7 +28,7 @@ module gpioemu(
     assign gpio_in_s_insp = gpio_in_s;
 
     always @(*) begin
-        sdata_in_s = sdata_in;      // buforowanie danych z CPU
+        sdata_in_s = sdata_in;
     end
 
     always @(posedge gpio_latch or negedge n_reset) begin
@@ -48,8 +48,8 @@ module gpioemu(
     /* =====================================================
        REJESTRY STERUJĄCE I STATUS
        ===================================================== */
-    reg        ena;                 // start/ack
-    reg [31:0] status;              // 0=idle, 1=busy, 2=done
+    reg        ena;              // start / ack
+    reg [31:0] status;           // 0=idle, 1=busy, 2=done
 
     /* =====================================================
        FSM
@@ -82,11 +82,11 @@ module gpioemu(
             ena  <= 1'b0;
         end else begin
             case (saddress)
-                16'h0100: arg1[63:32] <= sdata_in_s;   // ARG1_H
-                16'h0108: arg1[31:0]  <= sdata_in_s;   // ARG1_L
-                16'h00F0: arg2[63:32] <= sdata_in_s;   // ARG2_H
-                16'h00F8: arg2[31:0]  <= sdata_in_s;   // ARG2_L
-                16'h00D0: ena         <= sdata_in_s[0];// CTRL
+                16'h0100: arg1[63:32] <= sdata_in_s;
+                16'h0108: arg1[31:0]  <= sdata_in_s;
+                16'h00F0: arg2[63:32] <= sdata_in_s;
+                16'h00F8: arg2[31:0]  <= sdata_in_s;
+                16'h00D0: ena         <= sdata_in_s[0];
                 default: ;
             endcase
         end
@@ -109,19 +109,15 @@ module gpioemu(
                 end
 
                 CALC: begin
-                    status    <= 32'h1;
+                    status    <= 32'h1;   // BUSY
+
                     mant_prod <= mant1_ext * mant2_ext;
                     exp_sum   <= {1'b0, arg1[27:1]} +
                                  {1'b0, arg2[27:1]} -
                                  {1'b0, BIAS};
                     sign_r    <= arg1[0] ^ arg2[0];
-                    state     <= DONE;
-                end
 
-                DONE: begin
-                    // DONE musi być widoczne, gdy ena=1
-                    status <= 32'h2;
-
+                    /* ==== ZAPIS WYNIKU (TYLKO RAZ!) ==== */
                     if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
                     else begin
@@ -135,9 +131,13 @@ module gpioemu(
                         end
                     end
 
-                    // ACK od software (ena=0) czyści DONE
+                    state <= DONE;
+                end
+
+                DONE: begin
+                    status <= 32'h2;   // DONE
                     if (!ena)
-                        state <= IDLE;
+                        state <= IDLE; // ACK od software
                 end
 
                 default: begin
@@ -149,7 +149,7 @@ module gpioemu(
     end
 
     /* =====================================================
-       ODCZYT Z CPU — ZDARZENIOWO (posedge srd)  ← KLUCZ
+       ODCZYT Z CPU — ZDARZENIOWO (posedge srd)
        ===================================================== */
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
