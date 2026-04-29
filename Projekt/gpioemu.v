@@ -5,30 +5,30 @@
 
 module gpioemu(
     input           n_reset,
-    input  [15:0]   saddress,
-    input           srd,
-    input           swr,
-    input  [31:0]   sdata_in,
-    output reg [31:0] sdata_out,
+    input  [15:0]   saddress,      // adres relatywny
+    input           srd,            // odczyt (zbocze!)
+    input           swr,            // zapis  (zbocze!)
+    input  [31:0]   sdata_in,       // dane z CPU
+    output reg [31:0] sdata_out,    // dane do CPU
     input  [31:0]   gpio_in,
     input           gpio_latch,
     output [31:0]   gpio_out,
-    input           clk,
+    input           clk,            // zegar 1 kHz
     output [31:0]   gpio_in_s_insp
 );
 
     /* =====================================================
-       BUFOROWANIE MAGISTRALI + GPIO (KONTRAKT SYKOM)
+       BUFOROWANIE MAGISTRALI / GPIO (WYMAGANE)
        ===================================================== */
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
 
-    assign gpio_out        = gpio_out_s;
-    assign gpio_in_s_insp  = gpio_in_s;
+    assign gpio_out       = gpio_out_s;
+    assign gpio_in_s_insp = gpio_in_s;
 
     always @(*) begin
-        sdata_in_s = sdata_in;
+        sdata_in_s = sdata_in;      // buforowanie danych z CPU
     end
 
     always @(posedge gpio_latch or negedge n_reset) begin
@@ -39,22 +39,23 @@ module gpioemu(
     end
 
     /* =====================================================
-       REJESTRY DANYCH
+       REJESTRY DANYCH FP
        ===================================================== */
     reg [63:0] arg1;
     reg [63:0] arg2;
     reg [63:0] result;
 
     /* =====================================================
-       REJESTRY STERUJĄCE
+       REJESTRY STERUJĄCE I STATUS
        ===================================================== */
-    reg ena;
-    reg [31:0] status;   // 0=idle, 1=busy, 2=done
+    reg        ena;                 // start/ack
+    reg [31:0] status;              // 0=idle, 1=busy, 2=done
 
     /* =====================================================
        FSM
        ===================================================== */
     reg [1:0] state;
+
     localparam IDLE = 2'd0;
     localparam CALC = 2'd1;
     localparam DONE = 2'd2;
@@ -72,7 +73,7 @@ module gpioemu(
     reg [73:0] mant_prod;
 
     /* =====================================================
-       ZAPIS Z CPU — ZDARZENIOWO (PDF!)
+       ZAPIS Z CPU — ZDARZENIOWO (posedge swr)
        ===================================================== */
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
@@ -81,18 +82,18 @@ module gpioemu(
             ena  <= 1'b0;
         end else begin
             case (saddress)
-                16'h0100: arg1[63:32] <= sdata_in_s;
-                16'h0108: arg1[31:0]  <= sdata_in_s;
-                16'h00F0: arg2[63:32] <= sdata_in_s;
-                16'h00F8: arg2[31:0]  <= sdata_in_s;
-                16'h00D0: ena         <= sdata_in_s[0];
+                16'h0100: arg1[63:32] <= sdata_in_s;   // ARG1_H
+                16'h0108: arg1[31:0]  <= sdata_in_s;   // ARG1_L
+                16'h00F0: arg2[63:32] <= sdata_in_s;   // ARG2_H
+                16'h00F8: arg2[31:0]  <= sdata_in_s;   // ARG2_L
+                16'h00D0: ena         <= sdata_in_s[0];// CTRL
                 default: ;
             endcase
         end
     end
 
     /* =====================================================
-       FSM + OBLICZENIA
+       FSM + OBLICZENIA (clk)
        ===================================================== */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
@@ -118,7 +119,9 @@ module gpioemu(
                 end
 
                 DONE: begin
+                    // DONE musi być widoczne, gdy ena=1
                     status <= 32'h2;
+
                     if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
                     else begin
@@ -131,6 +134,8 @@ module gpioemu(
                             result[63:28] <= mant_prod[71:36];
                         end
                     end
+
+                    // ACK od software (ena=0) czyści DONE
                     if (!ena)
                         state <= IDLE;
                 end
@@ -144,7 +149,7 @@ module gpioemu(
     end
 
     /* =====================================================
-       ODCZYT Z CPU — ZDARZENIOWO (KLUCZ!)
+       ODCZYT Z CPU — ZDARZENIOWO (posedge srd)  ← KLUCZ
        ===================================================== */
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
