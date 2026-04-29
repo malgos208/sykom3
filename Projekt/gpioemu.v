@@ -147,7 +147,7 @@ module gpioemu(
         case (state)
             IDLE:    state_next = CALC;
             CALC:    state_next = DONE;
-            DONE:    state_next = IDLE;
+            DONE:    if (!ena) state_next = IDLE; // STICKY DONE
             default: state_next = IDLE;
         endcase
     end
