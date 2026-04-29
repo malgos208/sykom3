@@ -5,55 +5,61 @@
 
 module gpioemu(
     input           n_reset,
-    input           clk,
-
     input  [15:0]   saddress,
     input           srd,
     input           swr,
     input  [31:0]   sdata_in,
     output reg [31:0] sdata_out,
-
     input  [31:0]   gpio_in,
     input           gpio_latch,
     output [31:0]   gpio_out,
-
+    input           clk,
     output [31:0]   gpio_in_s_insp
 );
 
-    /* ---------------- Magistrala / debug ---------------- */
-
+    /* =====================================================
+       BUFOROWANIE MAGISTRALI + GPIO (KONTRAKT SYKOM)
+       ===================================================== */
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
+
+    assign gpio_out        = gpio_out_s;
+    assign gpio_in_s_insp  = gpio_in_s;
 
     always @(*) begin
         sdata_in_s = sdata_in;
     end
 
-    /* ---------------- Sterowanie ---------------- */
+    always @(posedge gpio_latch or negedge n_reset) begin
+        if (!n_reset)
+            gpio_in_s <= 32'h0;
+        else
+            gpio_in_s <= gpio_in;
+    end
 
-    reg ena;   // dokładnie jak u kolegi
+    /* =====================================================
+       REJESTRY DANYCH
+       ===================================================== */
+    reg [63:0] arg1;
+    reg [63:0] arg2;
+    reg [63:0] result;
 
-    /* ---------------- Dane FP ---------------- */
+    /* =====================================================
+       REJESTRY STERUJĄCE
+       ===================================================== */
+    reg ena;
+    reg [31:0] status;   // 0=idle, 1=busy, 2=done
 
-    reg [63:0] arg1, arg2, result;
-    reg [31:0] status;
-
-    reg        sign_r;
-    reg [27:0] exp_sum;
-    reg [73:0] mant_prod;
-
-    /* ---------------- FSM ---------------- */
-
-    reg [1:0] state, state_next;
-    localparam [1:0]
-        IDLE = 2'd0,
-        CALC = 2'd1,
-        DONE = 2'd2;
+    /* =====================================================
+       FSM
+       ===================================================== */
+    reg [1:0] state;
+    localparam IDLE = 2'd0;
+    localparam CALC = 2'd1;
+    localparam DONE = 2'd2;
 
     localparam [26:0] BIAS = 27'd67108864;
-
-    /* ---------------- Detekcja zera ---------------- */
 
     wire arg1_is_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
     wire arg2_is_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
@@ -61,15 +67,19 @@ module gpioemu(
     wire [73:0] mant1_ext = arg1_is_zero ? 74'd0 : {37'd0, 1'b1, arg1[63:28]};
     wire [73:0] mant2_ext = arg2_is_zero ? 74'd0 : {37'd0, 1'b1, arg2[63:28]};
 
-    /* ======================================================
-       ZAPISY Z CPU – IDENTYCZNIE JAK U KOLEGI
-       ====================================================== */
-    always @(posedge clk or negedge n_reset) begin
+    reg        sign_r;
+    reg [27:0] exp_sum;
+    reg [73:0] mant_prod;
+
+    /* =====================================================
+       ZAPIS Z CPU — ZDARZENIOWO (PDF!)
+       ===================================================== */
+    always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
             arg1 <= 64'h0;
             arg2 <= 64'h0;
             ena  <= 1'b0;
-        end else if (swr) begin
+        end else begin
             case (saddress)
                 16'h0100: arg1[63:32] <= sdata_in_s;
                 16'h0108: arg1[31:0]  <= sdata_in_s;
@@ -81,27 +91,20 @@ module gpioemu(
         end
     end
 
-    /* ======================================================
-       FSM – BRAMKOWANY PRZEZ ena (1:1 jak u kolegi)
-       ====================================================== */
+    /* =====================================================
+       FSM + OBLICZENIA
+       ===================================================== */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
-            state     <= IDLE;
-            status    <= 32'h0;
-            result    <= 64'h0;
-            mant_prod <= 74'h0;
-            exp_sum   <= 28'h0;
-            sign_r    <= 1'b0;
-            gpio_in_s <= 32'h0;
-        end else if (ena) begin
-            state <= state_next;
-
-            if (gpio_latch)
-                gpio_in_s <= gpio_in;
-
+            state  <= IDLE;
+            status <= 32'h0;
+            result <= 64'h0;
+        end else begin
             case (state)
                 IDLE: begin
                     status <= 32'h0;
+                    if (ena)
+                        state <= CALC;
                 end
 
                 CALC: begin
@@ -111,6 +114,7 @@ module gpioemu(
                                  {1'b0, arg2[27:1]} -
                                  {1'b0, BIAS};
                     sign_r    <= arg1[0] ^ arg2[0];
+                    state     <= DONE;
                 end
 
                 DONE: begin
@@ -127,6 +131,8 @@ module gpioemu(
                             result[63:28] <= mant_prod[71:36];
                         end
                     end
+                    if (!ena)
+                        state <= IDLE;
                 end
 
                 default: begin
@@ -134,52 +140,28 @@ module gpioemu(
                     status <= 32'h0;
                 end
             endcase
-        end else begin
-            state  <= IDLE;
-            status <= 32'h0;
         end
     end
 
-    /* ---------------- Next state – jak u kolegi ---------------- */
-
-    always @(*) begin
-        state_next = state;
-        case (state)
-            IDLE:    state_next = CALC;
-            CALC:    state_next = DONE;
-
-            DONE: begin
-                if (!ena)
-                    state_next = IDLE;   // software resetuje DONE
-                else
-                    state_next = DONE;   // DONE STICKY
-            end
-
-            default: state_next = IDLE;
-        endcase
-    end
-
-    /* ---------------- Odczyt CPU ---------------- */
-
-    always @(*) begin
-        // if (srd) begin
+    /* =====================================================
+       ODCZYT Z CPU — ZDARZENIOWO (KLUCZ!)
+       ===================================================== */
+    always @(posedge srd or negedge n_reset) begin
+        if (!n_reset)
+            sdata_out <= 32'h0;
+        else begin
             case (saddress)
-                16'h0100: sdata_out = arg1[63:32];
-                16'h0108: sdata_out = arg1[31:0];
-                16'h00F0: sdata_out = arg2[63:32];
-                16'h00F8: sdata_out = arg2[31:0];
-                16'h00D0: sdata_out = {31'b0, ena};
-                16'h00E8: sdata_out = status;
-                16'h00D8: sdata_out = result[63:32];
-                16'h00E0: sdata_out = result[31:0];
-                default:  sdata_out = 32'h0;
+                16'h0100: sdata_out <= arg1[63:32];
+                16'h0108: sdata_out <= arg1[31:0];
+                16'h00F0: sdata_out <= arg2[63:32];
+                16'h00F8: sdata_out <= arg2[31:0];
+                16'h00D0: sdata_out <= {31'b0, ena};
+                16'h00E8: sdata_out <= status;
+                16'h00D8: sdata_out <= result[63:32];
+                16'h00E0: sdata_out <= result[31:0];
+                default:  sdata_out <= 32'h0;
             endcase
-        // end else begin
-        //     sdata_out = 32'h0;
-        // end
+        end
     end
-
-    assign gpio_out = gpio_out_s;
-    assign gpio_in_s_insp = gpio_in_s;
 
 endmodule
