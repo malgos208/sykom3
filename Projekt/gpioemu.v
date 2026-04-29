@@ -132,6 +132,12 @@ module gpioemu(
                         end
                     end
                 end
+                
+                default: begin
+                    /* stan nieużywany (2'b11) – bezpieczny fallback */
+                    status <= 32'h0;
+                end
+
             endcase
         end
         else begin
