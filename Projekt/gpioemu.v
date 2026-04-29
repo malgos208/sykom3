@@ -5,20 +5,20 @@
 
 module gpioemu(
     input           n_reset,
-    input  [15:0]   saddress, //magistrala - adres
-    input           srd, // odczyt przez CPU z magistrali danych
-    input           swr, // zapis przez CPU do magistrali danych
-    input  [31:0]   sdata_in, // magistraja wejściowa CPU
-    output [31:0]   sdata_out, // magistraja wyjściowa do CPU
-    input  [31:0]   gpio_in, // dane z peryferii wejście do modułu
-    input           gpio_latch, // zapis danych na gpio_in
-    output [31:0]   gpio_out, // dane wyjściowe do peryferii
+    input  [15:0]   saddress,        // magistrala - adres
+    input           srd,             // odczyt przez CPU z magistrali danych
+    input           swr,             // zapis przez CPU do magistrali danych
+    input  [31:0]   sdata_in,        // magistrala wejściowa CPU
+    output [31:0]   sdata_out,       // magistrala wyjściowa do CPU
+    input  [31:0]   gpio_in,         // dane z peryferii wejście do modułu
+    input           gpio_latch,      // zapis danych na gpio_in
+    output [31:0]   gpio_out,        // dane wyjściowe do peryferii
     input           clk,
-    output [31:0]   gpio_in_s_insp // debugging
+    output [31:0]   gpio_in_s_insp   // debugging
 );
 
-    reg [31:0] gpio_in_s   /* verilator public_flat_rw */; // stan peryferii wejściowych
-    reg [31:0] gpio_out_s  /* verilator public_flat_rw */; // stan peryferii wyjściowych
+    reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
+    reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
 
     reg [63:0] arg1, arg2, result;
@@ -37,6 +37,10 @@ module gpioemu(
     // Wykrywanie zera: E=0 i M=0 (specjalny wzorzec)
     wire arg1_is_zero = (arg1[27:1] == 27'd0) && (arg1[63:28] == 36'd0);
     wire arg2_is_zero = (arg2[27:1] == 27'd0) && (arg2[63:28] == 36'd0);
+
+    // Rozszerzone mantysy (74 bity dla zgodności z przypisaniem)
+    wire [73:0] mant1_ext = arg1_is_zero ? 74'd0 : {37'd0, 1'b1, arg1[63:28]};
+    wire [73:0] mant2_ext = arg2_is_zero ? 74'd0 : {37'd0, 1'b1, arg2[63:28]};
 
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
@@ -71,15 +75,14 @@ module gpioemu(
                 endcase
             end
 
+            // Wszystkie możliwe stany pokryte (poprawka CASEINCOMPLETE)
             case (next_state)
                 IDLE: begin
                     status <= 32'h0;
                 end
                 CALC: begin
                     status <= 32'h1;  // BUSY
-                    // Mnożenie mantys: 0 dla zera, {1'b1, M} dla normalnej
-                    mant_prod <= (arg1_is_zero ? 37'd0 : {1'b1, arg1[63:28]})
-                               * (arg2_is_zero ? 37'd0 : {1'b1, arg2[63:28]});
+                    mant_prod <= mant1_ext * mant2_ext;
                     exp_sum   <= {1'b0, arg1[27:1]} + {1'b0, arg2[27:1]} - {1'b0, BIAS};
                     sign_r    <= arg1[0] ^ arg2[0];
                 end
@@ -97,6 +100,10 @@ module gpioemu(
                             result[63:28] <= mant_prod[71:36];
                         end
                     end
+                end
+                default: begin
+                    // Pokrycie nieużywanych stanów (2'b11)
+                    status <= 32'h0;
                 end
             endcase
         end

@@ -256,11 +256,30 @@ static ssize_t restma_read(struct file *f, char __user *ubuf, size_t count, loff
     return len;
 }
 
-static const struct proc_ops a1stma_ops = { .proc_write = a1stma_write };
-static const struct proc_ops a2stma_ops = { .proc_write = a2stma_write };
-static const struct proc_ops ctstma_ops = { .proc_write = ctstma_write };
-static const struct proc_ops ststma_ops = { .proc_read  = ststma_read  };
-static const struct proc_ops restma_ops = { .proc_read  = restma_read  };
+static const struct file_operations a1stma_ops = {
+    .owner = THIS_MODULE,
+    .write = a1stma_write,
+};
+
+static const struct file_operations a2stma_ops = {
+    .owner = THIS_MODULE,
+    .write = a2stma_write,
+};
+
+static const struct file_operations ctstma_ops = {
+    .owner = THIS_MODULE,
+    .write = ctstma_write,
+};
+
+static const struct file_operations ststma_ops = {
+    .owner = THIS_MODULE,
+    .read  = ststma_read,
+};
+
+static const struct file_operations restma_ops = {
+    .owner = THIS_MODULE,
+    .read  = restma_read,
+};
 
 /* ---------- Inicjalizacja / wyjście ---------- */
 static struct proc_dir_entry *proc_dir;

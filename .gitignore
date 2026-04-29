@@ -5,3 +5,5 @@ Projekt/qemu-system-riscv32-sykt
 *.elf
 Image
 rootfs.ext2
+*.vvp
+*.vcd
