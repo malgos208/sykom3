@@ -19,56 +19,37 @@ module gpioemu(
     output [31:0]    gpio_in_s_insp
 );
 
-    /* ============================================================
-       BUFORY SYKOM / VERILATOR (OBOWIĄZKOWE)
-       ============================================================ */
+    // bufory (wymagane przez narzędzia)
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
-
     assign gpio_out       = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
 
-    /* bufor danych z CPU */
-    always @(*) begin
-        sdata_in_s = sdata_in;
-    end
+    always @(*) sdata_in_s = sdata_in;
 
-    /* latch GPIO */
     always @(posedge gpio_latch or negedge n_reset) begin
-        if (!n_reset)
-            gpio_in_s <= 32'h0;
-        else
-            gpio_in_s <= gpio_in;
+        if (!n_reset) gpio_in_s <= 32'h0;
+        else          gpio_in_s <= gpio_in;
     end
 
-    /* ============================================================
-       REJESTRY ARGUMENTÓW I WYNIKU
-       ============================================================ */
+    // ========== REJESTRY ARGUMENTÓW I WYNIKU ==========
     reg [63:0] arg1;
     reg [63:0] arg2;
     reg [63:0] result;
 
-    /* ============================================================
-       STEROWANIE
-       ============================================================ */
-    reg        ena;       // enable FSM (wg wykładów)
-    reg        start;     // żądanie startu z CPU
-    reg [31:0] status;    // 0=idle, 1=busy, 2=done
+    // ========== STEROWANIE ==========
+    reg        start;      // żądanie startu z CPU
+    reg [31:0] status;     // 0=idle, 1=busy, 2=done
 
-    /* ============================================================
-       FSM
-       ============================================================ */
+    // ========== FSM ==========
     reg [1:0] state;
     localparam IDLE   = 2'd0;
     localparam CALC   = 2'd1;
     localparam FINISH = 2'd2;
-    localparam DONE   = 2'd3;
 
-    /* ============================================================
-       PARAMETRY FP
-       ============================================================ */
-    localparam [26:0] BIAS = 27'd67108864;
+    // ========== PARAMETRY FP ==========
+    localparam [26:0] BIAS = 27'd67108864;   // 2^26
 
     wire arg1_is_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
     wire arg2_is_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
@@ -80,9 +61,7 @@ module gpioemu(
     reg [27:0] exp_sum;
     reg [73:0] mant_prod;
 
-    /* ============================================================
-       ZAPIS Z CPU (MMIO)
-       ============================================================ */
+    // ========== ZAPIS Z CPU ==========
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
             arg1  <= 64'h0;
@@ -94,44 +73,32 @@ module gpioemu(
                 16'h0108: arg1[31:0]  <= sdata_in_s;
                 16'h00F0: arg2[63:32] <= sdata_in_s;
                 16'h00F8: arg2[31:0]  <= sdata_in_s;
-                16'h00D0: start       <= sdata_in_s[0];
+                16'h00D0: start       <= sdata_in_s[0];   // zapis 1 -> start
                 default: ;
             endcase
         end
     end
 
-    /* ============================================================
-       ENABLE FSM (ZGODNIE Z WYKŁADAMI)
-       ============================================================ */
-    always @(posedge clk or negedge n_reset) begin
-        if (!n_reset)
-            ena <= 1'b0;
-        else if (state == DONE)
-            ena <= 1'b0;
-        else if (state == IDLE && start)
-            ena <= 1'b1;
-    end
-
-    /* ============================================================
-       FSM – tylko gdy ena=1
-       ============================================================ */
+    // ========== FSM (bez ena) ==========
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
             state      <= IDLE;
             status     <= 32'h0;
             result     <= 64'h0;
             gpio_out_s <= 32'h0;
-        end else if (ena) begin
+        end else begin
             case (state)
-
                 IDLE: begin
-                    status <= 32'h0;   // idle
-                    start  <= 1'b0;    // kasujemy request START
-                    state  <= CALC;
+                    // jeśli pojawi się żądanie startu
+                    if (start) begin
+                        start <= 1'b0;        // skasuj żądanie (jednorazowe uruchomienie)
+                        state <= CALC;
+                        // status pozostaje 0 (idle) – zmieni się w CALC
+                    end
                 end
 
                 CALC: begin
-                    status    <= 32'h1; // busy
+                    status    <= 32'h1;        // busy
                     mant_prod <= mant1_ext * mant2_ext;
                     exp_sum   <= {1'b0, arg1[27:1]} +
                                  {1'b0, arg2[27:1]} -
@@ -141,6 +108,7 @@ module gpioemu(
                 end
 
                 FINISH: begin
+                    // obliczenie wyniku
                     if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
                     else if (mant_prod[73]) begin
@@ -152,24 +120,16 @@ module gpioemu(
                         result[27:1]   <= exp_sum[26:0];
                         result[63:28]  <= mant_prod[71:36];
                     end
-                    state <= DONE;
+                    status <= 32'h2;         // done
+                    state  <= IDLE;          // powrót do oczekiwania na kolejny start
                 end
 
-                DONE: begin
-                    status <= 32'h2; // done
-                end
-
-                default: begin
-                    state  <= IDLE;
-                    status <= 32'h0;
-                end
+                default: state <= IDLE;
             endcase
         end
     end
 
-    /* ============================================================
-       ODCZYT Z CPU
-       ============================================================ */
+    // ========== ODCZYT Z CPU ==========
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
             sdata_out <= 32'h0;
