@@ -238,6 +238,7 @@ static ssize_t ctstma_write(struct file *f,
         iowrite32(0, ctrl);          /* reset FSM */
     } else if (cmd == 1) {
         iowrite32(1, ctrl);          /* start */
+        msleep(1);
     } else {
         return -EINVAL;
     }
