@@ -4,23 +4,23 @@
 /* verilator lint_off COMBDLY */
 
 module gpioemu(
-    input             n_reset,
-    input  [15:0]     saddress,
-    input             srd,
-    input             swr,
-    input  [31:0]     sdata_in,
+    input            n_reset,
+    input  [15:0]    saddress,
+    input            srd,
+    input            swr,
+    input  [31:0]    sdata_in,
     output reg [31:0] sdata_out,
 
-    input  [31:0]     gpio_in,
-    input             gpio_latch,
-    output [31:0]     gpio_out,
+    input  [31:0]    gpio_in,
+    input            gpio_latch,
+    output [31:0]    gpio_out,
 
-    input             clk,
-    output [31:0]     gpio_in_s_insp
+    input            clk,
+    output [31:0]    gpio_in_s_insp
 );
 
     /* ============================================================
-       BUFORY SYKOM / VERILATOR
+       BUFORY SYKOM / VERILATOR (OBOWIĄZKOWE)
        ============================================================ */
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
@@ -29,122 +29,113 @@ module gpioemu(
     assign gpio_out       = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
 
-    always @(*) sdata_in_s = sdata_in;
+    /* bufor danych z CPU */
+    always @(*) begin
+        sdata_in_s = sdata_in;
+    end
 
-    always @(posedge gpio_latch or negedge n_reset)
-        if (!n_reset) gpio_in_s <= 32'h0;
-        else          gpio_in_s <= gpio_in;
+    /* latch GPIO */
+    always @(posedge gpio_latch or negedge n_reset) begin
+        if (!n_reset)
+            gpio_in_s <= 32'h0;
+        else
+            gpio_in_s <= gpio_in;
+    end
 
     /* ============================================================
-       REJESTRY MMIO – ARGUMENTY I START
+       REJESTRY ARGUMENTÓW I WYNIKU
        ============================================================ */
     reg [63:0] arg1;
     reg [63:0] arg2;
-    reg        start_mmio;   // poziomowy bit z CPU (MMIO)
-
-    /* ============================================================
-       SYNCHRONIZACJA START (ASYNC → clk) + EVENT
-       ============================================================ */
-    reg start_sync1, start_sync2, start_sync2_d;
-    wire start_evt;
-
-    always @(posedge clk or negedge n_reset) begin
-        if (!n_reset) begin
-            start_sync1   <= 1'b0;
-            start_sync2   <= 1'b0;
-            start_sync2_d <= 1'b0;
-        end else begin
-            start_sync1   <= start_mmio;
-            start_sync2   <= start_sync1;
-            start_sync2_d <= start_sync2;
-        end
-    end
-
-    assign start_evt = start_sync2 & ~start_sync2_d; // impuls 1‑cyklowy
-
-    /* ============================================================
-       REJESTRY WYNIKU / STATUSU
-       ============================================================ */
     reg [63:0] result;
-    reg [31:0] status;   // 0=idle, 1=busy, 2=done
+
+    /* ============================================================
+       STEROWANIE
+       ============================================================ */
+    reg        ena;       // enable FSM (wg wykładów)
+    reg        start;     // żądanie startu z CPU
+    reg [31:0] status;    // 0=idle, 1=busy, 2=done
 
     /* ============================================================
        FSM
        ============================================================ */
+    reg [1:0] state;
     localparam IDLE   = 2'd0;
     localparam CALC   = 2'd1;
     localparam FINISH = 2'd2;
     localparam DONE   = 2'd3;
-
-    reg [1:0] state;
 
     /* ============================================================
        PARAMETRY FP
        ============================================================ */
     localparam [26:0] BIAS = 27'd67108864;
 
-    wire arg1_is_zero = (arg1[27:1] == 27'd0) && (arg1[63:28] == 36'd0);
-    wire arg2_is_zero = (arg2[27:1] == 27'd0) && (arg2[63:28] == 36'd0);
+    wire arg1_is_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
+    wire arg2_is_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
 
-    wire [73:0] mant1_ext = arg1_is_zero ? 74'd0
-                          : {37'd0, 1'b1, arg1[63:28]};
+    wire [73:0] mant1_ext = arg1_is_zero ? 74'd0 : {37'd0, 1'b1, arg1[63:28]};
+    wire [73:0] mant2_ext = arg2_is_zero ? 74'd0 : {37'd0, 1'b1, arg2[63:28]};
 
-    wire [73:0] mant2_ext = arg2_is_zero ? 74'd0
-                          : {37'd0, 1'b1, arg2[63:28]};
-
-    wire [147:0] mant_prod_full;
-    assign mant_prod_full = mant1_ext * mant2_ext;
-
-
-    /* --- rejestry pośrednie (poprawione szerokości) --- */
     reg        sign_r;
-    reg [26:0] exp_sum;          // dokładnie 27 bitów – bez UNUSED
-    reg [73:36] mant_prod;       // tylko używana część iloczynu
+    reg [27:0] exp_sum;
+    reg [73:0] mant_prod;
 
     /* ============================================================
-       ZAPIS MMIO (ASYNC)
+       ZAPIS Z CPU (MMIO)
        ============================================================ */
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
-            arg1       <= 64'h0;
-            arg2       <= 64'h0;
-            start_mmio <= 1'b0;
+            arg1  <= 64'h0;
+            arg2  <= 64'h0;
+            start <= 1'b0;
         end else begin
             case (saddress)
                 16'h0100: arg1[63:32] <= sdata_in_s;
                 16'h0108: arg1[31:0]  <= sdata_in_s;
                 16'h00F0: arg2[63:32] <= sdata_in_s;
                 16'h00F8: arg2[31:0]  <= sdata_in_s;
-                16'h00D0: start_mmio  <= sdata_in_s[0];
+                16'h00D0: start       <= sdata_in_s[0];
                 default: ;
             endcase
         end
     end
 
     /* ============================================================
-       FSM – JEDYNA POPRAWNA LOGIKA
+       ENABLE FSM (ZGODNIE Z WYKŁADAMI)
+       ============================================================ */
+    always @(posedge clk or negedge n_reset) begin
+        if (!n_reset)
+            ena <= 1'b0;
+        else if (state == DONE)
+            ena <= 1'b0;
+        else if (state == IDLE && start)
+            ena <= 1'b1;
+    end
+
+    /* ============================================================
+       FSM – tylko gdy ena=1
        ============================================================ */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
-            state     <= IDLE;
-            status    <= 32'h0;
-            result    <= 64'h0;
-            mant_prod <= '0;
-            exp_sum   <= '0;
-            sign_r    <= 1'b0;
-        end else begin
+            state      <= IDLE;
+            status     <= 32'h0;
+            result     <= 64'h0;
+            gpio_out_s <= 32'h0;
+        end else if (ena) begin
             case (state)
 
                 IDLE: begin
-                    status <= 32'h0;
-                    if (start_evt)
-                        state <= CALC;
+                    status <= 32'h0;   // idle
+                    start  <= 1'b0;    // kasujemy request START
+                    state  <= CALC;
                 end
 
                 CALC: begin
                     status    <= 32'h1; // busy
-                    mant_prod <= mant_prod_full[73:36];
-                    exp_sum   <= arg1[27:1] + arg2[27:1] - BIAS;
+                    mant_prod <= mant1_ext * mant2_ext;
+                    exp_sum   <= {1'b0, arg1[27:1]} +
+                                 {1'b0, arg2[27:1]} -
+                                 {1'b0, BIAS};
                     sign_r    <= arg1[0] ^ arg2[0];
                     state     <= FINISH;
                 end
@@ -154,11 +145,11 @@ module gpioemu(
                         result <= 64'h0;
                     else if (mant_prod[73]) begin
                         result[0]      <= sign_r;
-                        result[27:1]   <= exp_sum + 1'b1;
+                        result[27:1]   <= exp_sum[26:0] + 1;
                         result[63:28]  <= mant_prod[72:37];
                     end else begin
                         result[0]      <= sign_r;
-                        result[27:1]   <= exp_sum;
+                        result[27:1]   <= exp_sum[26:0];
                         result[63:28]  <= mant_prod[71:36];
                     end
                     state <= DONE;
@@ -166,7 +157,6 @@ module gpioemu(
 
                 DONE: begin
                     status <= 32'h2; // done
-                    state  <= IDLE;  // automatyczny powrót
                 end
 
                 default: begin
@@ -178,7 +168,7 @@ module gpioemu(
     end
 
     /* ============================================================
-       ODCZYT MMIO
+       ODCZYT Z CPU
        ============================================================ */
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
@@ -198,4 +188,3 @@ module gpioemu(
     end
 
 endmodule
-``
