@@ -17,11 +17,10 @@ module gpioemu(
     output [31:0]    gpio_in_s_insp
 );
 
-    // ---------- bufory wymagane przez narzędzia ----------
+    // ---------- bufory ----------
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
-    
     assign gpio_out = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
     always @(*) sdata_in_s = sdata_in;
@@ -29,38 +28,44 @@ module gpioemu(
         if (!n_reset) gpio_in_s <= 0;
         else gpio_in_s <= gpio_in;
 
-    // ---------- rejestry argumentów (64-bit) ----------
+    // ---------- rejestry argumentów ----------
     reg [63:0] arg1, arg2;
 
-    // ---------- sygnał startu z CPU (zapis pod adresem 0xD0) ----------
-    reg start_meta;
+    // ---------- sygnały start i reset z CPU ----------
+    reg start_meta, reset_meta;
     always @(posedge swr or negedge n_reset) begin
-        if (!n_reset) start_meta <= 0;
-        else if (saddress == 16'h00D0) start_meta <= sdata_in_s[0];
+        if (!n_reset) begin
+            start_meta <= 0;
+            reset_meta <= 0;
+        end else if (saddress == 16'h00D0) begin
+            start_meta <= sdata_in_s[0];
+            reset_meta <= ~sdata_in_s[0];   // zapis 0 -> reset
+        end
     end
 
-    // ---------- synchronizacja do domeny clk (1 kHz) ----------
-    reg start_sync, start_sync_d;
+    // ---------- synchronizacja do domeny clk ----------
+    reg start_sync, start_sync_d, reset_sync, reset_sync_d;
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
-            start_sync <= 0;
-            start_sync_d <= 0;
+            start_sync <= 0; start_sync_d <= 0;
+            reset_sync <= 0; reset_sync_d <= 0;
         end else begin
-            start_sync <= start_meta;
-            start_sync_d <= start_sync;
+            start_sync <= start_meta; start_sync_d <= start_sync;
+            reset_sync <= reset_meta; reset_sync_d <= reset_sync;
         end
     end
     wire start_trigger = start_sync && !start_sync_d;
+    wire reset_trigger = reset_sync && !reset_sync_d;
 
-    // ---------- FSM (taktowany clk) ----------
+    // ---------- FSM ----------
     reg [1:0] state;
     reg [31:0] status;   // 0=idle, 1=busy, 2=done
     reg [63:0] result;
 
     localparam IDLE = 2'd0, CALC = 2'd1, DONE = 2'd2;
 
-    // parametry formatu FP
-    localparam [26:0] BIAS = 27'd67108864;   // 2^26
+    // parametry FP
+    localparam [26:0] BIAS = 27'd67108864;
 
     wire arg1_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
     wire arg2_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
@@ -82,9 +87,14 @@ module gpioemu(
         end else begin
             case (state)
                 IDLE: begin
-                    if (start_trigger) begin
+                    if (reset_trigger) begin
+                        status <= 0;
+                        result <= 0;
+                    end else if (start_trigger) begin
                         state <= CALC;
                         status <= 1;   // busy
+                    end else begin
+                        status <= 0;   // idle
                     end
                 end
                 CALC: begin
@@ -108,11 +118,10 @@ module gpioemu(
         end
     end
 
-    // ---------- zapis argumentów (z CPU) ----------
+    // ---------- zapis argumentów ----------
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
-            arg1 <= 0;
-            arg2 <= 0;
+            arg1 <= 0; arg2 <= 0;
         end else begin
             case (saddress)
                 16'h0100: arg1[63:32] <= sdata_in_s;
@@ -124,10 +133,9 @@ module gpioemu(
         end
     end
 
-    // ---------- odczyt z CPU ----------
+    // ---------- odczyt ----------
     always @(posedge srd or negedge n_reset) begin
-        if (!n_reset)
-            sdata_out <= 0;
+        if (!n_reset) sdata_out <= 0;
         else begin
             case (saddress)
                 16'h0100: sdata_out <= arg1[63:32];
