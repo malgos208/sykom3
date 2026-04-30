@@ -18,7 +18,10 @@ module gpioemu(
 );
 
     // ---------- bufory wymagane przez narzędzia ----------
-    reg [31:0] gpio_in_s, gpio_out_s, sdata_in_s;
+    reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
+    reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
+    reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
+    
     assign gpio_out = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
     always @(*) sdata_in_s = sdata_in;
