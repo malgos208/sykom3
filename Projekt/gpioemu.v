@@ -18,14 +18,15 @@ module gpioemu(
     output [31:0]   gpio_in_s_insp
 );
 
-    //BUFOROWANIE MAGISTRALI / GPIO
-
+    /* ===============================
+       Bufory SYKOM
+       =============================== */
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
     reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
 
-    assign gpio_out        = gpio_out_s;
-    assign gpio_in_s_insp  = gpio_in_s;
+    assign gpio_out       = gpio_out_s;
+    assign gpio_in_s_insp = gpio_in_s;
 
     always @(*) begin
         sdata_in_s = sdata_in;
@@ -39,20 +40,18 @@ module gpioemu(
     end
 
     /* ===============================
-       Rejestry argumentów i wyniku
+       Rejestry FP
        =============================== */
     reg [63:0] arg1;
     reg [63:0] arg2;
     reg [63:0] result;
 
     /* ===============================
-       Rejestry sterujące
+       Sterowanie
        =============================== */
-    reg ena;          // enable FSM (zgodnie z wykładami)
-    reg start;        // asynchroniczny trigger (impuls)
-    reg start_d;      // do wykrycia zbocza
-
-    reg [31:0] status; // 0=idle, 1=busy, 2=done
+    reg        ena;     // ENABLE FSM – zgodnie z wykładami
+    reg        start;   // request z kernela (poziom, czyszczony sprzętowo)
+    reg [31:0] status;  // 0=idle, 1=busy, 2=done
 
     /* ===============================
        FSM
@@ -78,7 +77,7 @@ module gpioemu(
     reg [73:0] mant_prod;
 
     /* ===============================
-       ZAPIS Z CPU (posedge swr)
+       ZAPIS z CPU (MMIO)
        =============================== */
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
@@ -91,38 +90,26 @@ module gpioemu(
                 16'h0108: arg1[31:0]  <= sdata_in_s;
                 16'h00F0: arg2[63:32] <= sdata_in_s;
                 16'h00F8: arg2[31:0]  <= sdata_in_s;
-                16'h00D0: start       <= sdata_in_s[0]; // trigger start
+                16'h00D0: start       <= sdata_in_s[0]; // żądanie startu
                 default: ;
             endcase
         end
     end
 
     /* ===============================
-       WYKRYWANIE ZBOCZA start
-       =============================== */
-    always @(posedge clk or negedge n_reset) begin
-        if (!n_reset)
-            start_d <= 1'b0;
-        else
-            start_d <= start;
-    end
-
-    wire start_pulse = start & ~start_d;
-
-    /* ===============================
-       LOGIKA ENABLE (zgodnie z wykładami)
+       LOGIKA ENABLE (wg wykładów)
        =============================== */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset)
             ena <= 1'b0;
-        else if (start_pulse)
-            ena <= 1'b1;         // włącz FSM
         else if (state == DONE)
-            ena <= 1'b0;         // zakończenie operacji
+            ena <= 1'b0;          // FSM się zatrzymuje
+        else if (state == IDLE && start)
+            ena <= 1'b1;          // start -> włącz FSM
     end
 
     /* ===============================
-       FSM – aktualizowany tylko gdy ena=1
+       FSM – aktualizacja tylko gdy ena=1
        =============================== */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
@@ -132,11 +119,13 @@ module gpioemu(
         end else if (ena) begin
             case (state)
                 IDLE: begin
-                    status <= 32'h1; // busy
+                    status <= 32'h0;   // idle
                     state  <= CALC;
+                    start  <= 1'b0;    // <<< KLUCZOWE: wyczyszczenie requestu
                 end
 
                 CALC: begin
+                    status    <= 32'h1; // busy
                     mant_prod <= mant1_ext * mant2_ext;
                     exp_sum   <= {1'b0, arg1[27:1]} +
                                  {1'b0, arg2[27:1]} -
@@ -147,7 +136,6 @@ module gpioemu(
 
                 DONE: begin
                     status <= 32'h2; // done
-
                     if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
                     else if (mant_prod[73]) begin
@@ -162,16 +150,15 @@ module gpioemu(
                 end
 
                 default: begin
-                    state  <= state;
-                    status <= status;
-                    result <= result;
+                    state  <= IDLE;
+                    status <= 32'h0;
                 end
             endcase
         end
     end
 
     /* ===============================
-       ODCZYT Z CPU (posedge srd)
+       ODCZYT z CPU
        =============================== */
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
