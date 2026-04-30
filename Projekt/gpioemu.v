@@ -13,7 +13,7 @@ module gpioemu(
     input  [31:0]    gpio_in,
     input            gpio_latch,
     output [31:0]    gpio_out,
-    input            clk,            // 1 kHz, asynchroniczny do CPU
+    input            clk,
     output [31:0]    gpio_in_s_insp
 );
 
@@ -30,12 +30,10 @@ module gpioemu(
     reg [63:0] arg1, arg2;
 
     // ---------- sygnał startu z CPU (zapis pod adresem 0xD0) ----------
-    reg start_meta;   // zapisywany z swr
+    reg start_meta;
     always @(posedge swr or negedge n_reset) begin
-        if (!n_reset)
-            start_meta <= 0;
-        else if (saddress == 16'h00D0)
-            start_meta <= sdata_in_s[0];
+        if (!n_reset) start_meta <= 0;
+        else if (saddress == 16'h00D0) start_meta <= sdata_in_s[0];
     end
 
     // ---------- synchronizacja do domeny clk (1 kHz) ----------
@@ -49,16 +47,14 @@ module gpioemu(
             start_sync_d <= start_sync;
         end
     end
-    wire start_trigger = start_sync && !start_sync_d;   // zbocze narastające
+    wire start_trigger = start_sync && !start_sync_d;
 
     // ---------- FSM (taktowany clk) ----------
     reg [1:0] state;
     reg [31:0] status;   // 0=idle, 1=busy, 2=done
     reg [63:0] result;
 
-    localparam IDLE   = 2'd0,
-               CALC   = 2'd1,
-               DONE   = 2'd2;
+    localparam IDLE = 2'd0, CALC = 2'd1, DONE = 2'd2;
 
     // parametry formatu FP
     localparam [26:0] BIAS = 27'd67108864;   // 2^26
@@ -98,7 +94,7 @@ module gpioemu(
                     if (arg1_zero || arg2_zero)
                         result <= 0;
                     else if (mant_prod[73])
-                        result <= {mant_prod[72:37], exp_sum[26:0] + 1, sign};
+                        result <= {mant_prod[72:37], (exp_sum[26:0] + 27'b1), sign};
                     else
                         result <= {mant_prod[71:36], exp_sum[26:0], sign};
                     status <= 2;   // done
