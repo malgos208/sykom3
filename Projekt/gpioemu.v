@@ -10,83 +10,125 @@ module gpioemu(
     input            swr,
     input  [31:0]    sdata_in,
     output reg [31:0] sdata_out,
-
     input  [31:0]    gpio_in,
     input            gpio_latch,
     output [31:0]    gpio_out,
-
-    input            clk,   // NIEUŻYWANY (asynchroniczny, ignorujemy)
+    input            clk,            // 1 kHz, asynchroniczny do CPU
     output [31:0]    gpio_in_s_insp
 );
 
-    // bufory wymagane przez narzędzia
-    reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
-    reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
-    reg [31:0] sdata_in_s  /* verilator public_flat_rw */;
+    // ---------- bufory wymagane przez narzędzia ----------
+    reg [31:0] gpio_in_s, gpio_out_s, sdata_in_s;
     assign gpio_out = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
     always @(*) sdata_in_s = sdata_in;
     always @(posedge gpio_latch or negedge n_reset)
-        if (!n_reset) gpio_in_s <= 32'h0;
+        if (!n_reset) gpio_in_s <= 0;
         else gpio_in_s <= gpio_in;
 
-    // rejestry argumentów, wyniku i statusu
-    reg [63:0] arg1, arg2, result;
-    reg [31:0] status;   // 0 = idle, 2 = done
+    // ---------- rejestry argumentów (64-bit) ----------
+    reg [63:0] arg1, arg2;
+
+    // ---------- sygnał startu z CPU (zapis pod adresem 0xD0) ----------
+    reg start_meta;   // zapisywany z swr
+    always @(posedge swr or negedge n_reset) begin
+        if (!n_reset)
+            start_meta <= 0;
+        else if (saddress == 16'h00D0)
+            start_meta <= sdata_in_s[0];
+    end
+
+    // ---------- synchronizacja do domeny clk (1 kHz) ----------
+    reg start_sync, start_sync_d;
+    always @(posedge clk or negedge n_reset) begin
+        if (!n_reset) begin
+            start_sync <= 0;
+            start_sync_d <= 0;
+        end else begin
+            start_sync <= start_meta;
+            start_sync_d <= start_sync;
+        end
+    end
+    wire start_trigger = start_sync && !start_sync_d;   // zbocze narastające
+
+    // ---------- FSM (taktowany clk) ----------
+    reg [1:0] state;
+    reg [31:0] status;   // 0=idle, 1=busy, 2=done
+    reg [63:0] result;
+
+    localparam IDLE   = 2'd0,
+               CALC   = 2'd1,
+               DONE   = 2'd2;
 
     // parametry formatu FP
     localparam [26:0] BIAS = 27'd67108864;   // 2^26
 
-    // sygnały kombinacyjne do mnożenia
-    wire arg1_is_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
-    wire arg2_is_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
-    wire [73:0] mant1_ext = arg1_is_zero ? 74'd0 : {37'd0, 1'b1, arg1[63:28]};
-    wire [73:0] mant2_ext = arg2_is_zero ? 74'd0 : {37'd0, 1'b1, arg2[63:28]};
-    wire [73:0] mant_prod = mant1_ext * mant2_ext;
-    wire [27:0] exp_sum = {1'b0, arg1[27:1]} + {1'b0, arg2[27:1]} - {1'b0, BIAS};
-    wire sign = arg1[0] ^ arg2[0];
+    wire arg1_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
+    wire arg2_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
+    wire [73:0] mant1 = arg1_zero ? 74'd0 : {37'd0, 1'b1, arg1[63:28]};
+    wire [73:0] mant2 = arg2_zero ? 74'd0 : {37'd0, 1'b1, arg2[63:28]};
 
-    // zapis z CPU (synchroniczny z swr, bez użycia clk)
+    reg [73:0] mant_prod;
+    reg [27:0] exp_sum;
+    reg sign;
+
+    always @(posedge clk or negedge n_reset) begin
+        if (!n_reset) begin
+            state <= IDLE;
+            status <= 0;
+            result <= 0;
+            mant_prod <= 0;
+            exp_sum <= 0;
+            sign <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (start_trigger) begin
+                        state <= CALC;
+                        status <= 1;   // busy
+                    end
+                end
+                CALC: begin
+                    mant_prod <= mant1 * mant2;
+                    exp_sum   <= {1'b0, arg1[27:1]} + {1'b0, arg2[27:1]} - {1'b0, BIAS};
+                    sign      <= arg1[0] ^ arg2[0];
+                    state     <= DONE;
+                end
+                DONE: begin
+                    if (arg1_zero || arg2_zero)
+                        result <= 0;
+                    else if (mant_prod[73])
+                        result <= {mant_prod[72:37], exp_sum[26:0] + 1, sign};
+                    else
+                        result <= {mant_prod[71:36], exp_sum[26:0], sign};
+                    status <= 2;   // done
+                    state  <= IDLE;
+                end
+                default: state <= IDLE;
+            endcase
+        end
+    end
+
+    // ---------- zapis argumentów (z CPU) ----------
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
-            arg1   <= 64'h0;
-            arg2   <= 64'h0;
-            result <= 64'h0;
-            status <= 32'h0;
+            arg1 <= 0;
+            arg2 <= 0;
         end else begin
             case (saddress)
                 16'h0100: arg1[63:32] <= sdata_in_s;
                 16'h0108: arg1[31:0]  <= sdata_in_s;
                 16'h00F0: arg2[63:32] <= sdata_in_s;
                 16'h00F8: arg2[31:0]  <= sdata_in_s;
-                16'h00D0: begin
-                    if (sdata_in_s[0]) begin
-                        // asynchroniczne mnożenie – wynik gotowy natychmiast
-                        if (arg1_is_zero || arg2_is_zero)
-                            result <= 64'h0;
-                        else if (mant_prod[73]) begin
-                            result[0]      <= sign;
-                            result[27:1]   <= exp_sum[26:0] + 1;
-                            result[63:28]  <= mant_prod[72:37];
-                        end else begin
-                            result[0]      <= sign;
-                            result[27:1]   <= exp_sum[26:0];
-                            result[63:28]  <= mant_prod[71:36];
-                        end
-                        status <= 32'h2;   // done
-                    end else begin
-                        status <= 32'h0;   // idle (można też opcjonalnie wyzerować wynik)
-                    end
-                end
                 default: ;
             endcase
         end
     end
 
-    // odczyt z CPU
+    // ---------- odczyt z CPU ----------
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
-            sdata_out <= 32'h0;
+            sdata_out <= 0;
         else begin
             case (saddress)
                 16'h0100: sdata_out <= arg1[63:32];
@@ -96,7 +138,7 @@ module gpioemu(
                 16'h00E8: sdata_out <= status;
                 16'h00D8: sdata_out <= result[63:32];
                 16'h00E0: sdata_out <= result[31:0];
-                default:  sdata_out <= 32'h0;
+                default:  sdata_out <= 0;
             endcase
         end
     end
