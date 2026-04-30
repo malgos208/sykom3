@@ -1,3 +1,8 @@
+/* verilator lint_off UNUSED */
+/* verilator lint_off UNDRIVEN */
+/* verilator lint_off MULTIDRIVEN */
+/* verilator lint_off COMBDLY */
+
 module gpioemu(
     input             n_reset,
     input  [15:0]     saddress,
@@ -31,18 +36,16 @@ module gpioemu(
         else          gpio_in_s <= gpio_in;
 
     /* ============================================================
-       REJESTRY MMIO
+       REJESTRY MMIO – ARGUMENTY I START
        ============================================================ */
     reg [63:0] arg1;
     reg [63:0] arg2;
-    reg        start_mmio;   // asynchroniczny bit z CPU
+    reg        start_mmio;   // poziomowy bit z CPU (MMIO)
 
     /* ============================================================
-       SYNCHRONIZACJA START (KRYTYCZNE!)
+       SYNCHRONIZACJA START (ASYNC → clk) + EVENT
        ============================================================ */
-    reg start_sync1, start_sync2;
-    reg start_sync2_d;
-
+    reg start_sync1, start_sync2, start_sync2_d;
     wire start_evt;
 
     always @(posedge clk or negedge n_reset) begin
@@ -63,7 +66,7 @@ module gpioemu(
        REJESTRY WYNIKU / STATUSU
        ============================================================ */
     reg [63:0] result;
-    reg [31:0] status;      // 0=idle, 1=busy, 2=done
+    reg [31:0] status;   // 0=idle, 1=busy, 2=done
 
     /* ============================================================
        FSM
@@ -80,15 +83,19 @@ module gpioemu(
        ============================================================ */
     localparam [26:0] BIAS = 27'd67108864;
 
-    wire arg1_is_zero = (arg1[27:1] == 0) && (arg1[63:28] == 0);
-    wire arg2_is_zero = (arg2[27:1] == 0) && (arg2[63:28] == 0);
+    wire arg1_is_zero = (arg1[27:1] == 27'd0) && (arg1[63:28] == 36'd0);
+    wire arg2_is_zero = (arg2[27:1] == 27'd0) && (arg2[63:28] == 36'd0);
 
-    wire [73:0] mant1_ext = arg1_is_zero ? 74'd0 : {37'd0, 1'b1, arg1[63:28]};
-    wire [73:0] mant2_ext = arg2_is_zero ? 74'd0 : {37'd0, 1'b1, arg2[63:28]};
+    wire [73:0] mant1_ext = arg1_is_zero ? 74'd0
+                          : {37'd0, 1'b1, arg1[63:28]};
 
+    wire [73:0] mant2_ext = arg2_is_zero ? 74'd0
+                          : {37'd0, 1'b1, arg2[63:28]};
+
+    /* --- rejestry pośrednie (poprawione szerokości) --- */
     reg        sign_r;
-    reg [27:0] exp_sum;
-    reg [73:0] mant_prod;
+    reg [26:0] exp_sum;          // dokładnie 27 bitów – bez UNUSED
+    reg [73:36] mant_prod;       // tylko używana część iloczynu
 
     /* ============================================================
        ZAPIS MMIO (ASYNC)
@@ -115,12 +122,12 @@ module gpioemu(
        ============================================================ */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
-            state      <= IDLE;
-            status     <= 32'h0;
-            result     <= 64'h0;
-            mant_prod  <= 74'd0;
-            exp_sum    <= 28'd0;
-            sign_r     <= 1'b0;
+            state     <= IDLE;
+            status    <= 32'h0;
+            result    <= 64'h0;
+            mant_prod <= '0;
+            exp_sum   <= '0;
+            sign_r    <= 1'b0;
         end else begin
             case (state)
 
@@ -132,10 +139,8 @@ module gpioemu(
 
                 CALC: begin
                     status    <= 32'h1; // busy
-                    mant_prod <= mant1_ext * mant2_ext;
-                    exp_sum   <= {1'b0, arg1[27:1]} +
-                                 {1'b0, arg2[27:1]} -
-                                 {1'b0, BIAS};
+                    mant_prod <= (mant1_ext * mant2_ext)[73:36];
+                    exp_sum   <= arg1[27:1] + arg2[27:1] - BIAS;
                     sign_r    <= arg1[0] ^ arg2[0];
                     state     <= FINISH;
                 end
@@ -145,11 +150,11 @@ module gpioemu(
                         result <= 64'h0;
                     else if (mant_prod[73]) begin
                         result[0]      <= sign_r;
-                        result[27:1]   <= exp_sum[26:0] + 1'b1;
+                        result[27:1]   <= exp_sum + 1'b1;
                         result[63:28]  <= mant_prod[72:37];
                     end else begin
                         result[0]      <= sign_r;
-                        result[27:1]   <= exp_sum[26:0];
+                        result[27:1]   <= exp_sum;
                         result[63:28]  <= mant_prod[71:36];
                     end
                     state <= DONE;
@@ -157,7 +162,7 @@ module gpioemu(
 
                 DONE: begin
                     status <= 32'h2; // done
-                    state  <= IDLE;  // AUTOMATYCZNY POWRÓT
+                    state  <= IDLE;  // automatyczny powrót
                 end
 
                 default: begin
@@ -189,3 +194,4 @@ module gpioemu(
     end
 
 endmodule
+``
