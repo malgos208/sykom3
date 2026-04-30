@@ -20,7 +20,7 @@ module gpioemu(
 );
 
     /* ============================================================
-       BUFORY SYKOM / VERILATOR (OBOWIĄZKOWE)
+       BUFORY SYKOM / VERILATOR
        ============================================================ */
     reg [31:0] gpio_in_s   /* verilator public_flat_rw */;
     reg [31:0] gpio_out_s  /* verilator public_flat_rw */;
@@ -29,12 +29,10 @@ module gpioemu(
     assign gpio_out       = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
 
-    /* bufor danych z CPU */
     always @(*) begin
         sdata_in_s = sdata_in;
     end
 
-    /* latch GPIO */
     always @(posedge gpio_latch or negedge n_reset) begin
         if (!n_reset)
             gpio_in_s <= 32'h0;
@@ -50,11 +48,10 @@ module gpioemu(
     reg [63:0] result;
 
     /* ============================================================
-       STEROWANIE
+       REJESTRY STERUJĄCE
        ============================================================ */
-    reg        ena;       // enable FSM (wg wykładów)
-    reg        start;     // żądanie startu z CPU
-    reg [31:0] status;    // 0=idle, 1=busy, 2=done
+    reg        start;      // request z CPU (MMIO)
+    reg [31:0] status;     // 0=idle, 1=busy, 2=done
 
     /* ============================================================
        FSM
@@ -101,37 +98,33 @@ module gpioemu(
     end
 
     /* ============================================================
-       ENABLE FSM (ZGODNIE Z WYKŁADAMI)
-       ============================================================ */
-    always @(posedge clk or negedge n_reset) begin
-        if (!n_reset)
-            ena <= 1'b0;
-        else if (state == DONE)
-            ena <= 1'b0;
-        else if (state == IDLE && start)
-            ena <= 1'b1;
-    end
-
-    /* ============================================================
-       FSM – tylko gdy ena=1
+       FSM – JEDYNA POPRAWNA LOGIKA
        ============================================================ */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
-            state      <= IDLE;
-            status     <= 32'h0;
-            result     <= 64'h0;
-            gpio_out_s <= 32'h0;
-        end else if (ena) begin
+            state     <= IDLE;
+            status    <= 32'h0;
+            result    <= 64'h0;
+            mant_prod <= 74'd0;
+            exp_sum   <= 28'd0;
+            sign_r    <= 1'b0;
+        end else begin
             case (state)
 
+                /* -------------------------
+                   IDLE – oczekiwanie na start
+                   ------------------------- */
                 IDLE: begin
-                    status <= 32'h0;   // idle
-                    start  <= 1'b0;    // kasujemy request START
-                    state  <= CALC;
+                    status <= 32'h0;
+                    if (start)
+                        state <= CALC;
                 end
 
+                /* -------------------------
+                   CALC – obliczenia pośrednie
+                   ------------------------- */
                 CALC: begin
-                    status    <= 32'h1; // busy
+                    status    <= 32'h1;  // busy
                     mant_prod <= mant1_ext * mant2_ext;
                     exp_sum   <= {1'b0, arg1[27:1]} +
                                  {1'b0, arg2[27:1]} -
@@ -140,12 +133,15 @@ module gpioemu(
                     state     <= FINISH;
                 end
 
+                /* -------------------------
+                   FINISH – składanie wyniku
+                   ------------------------- */
                 FINISH: begin
                     if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
                     else if (mant_prod[73]) begin
                         result[0]      <= sign_r;
-                        result[27:1]   <= exp_sum[26:0] + 1;
+                        result[27:1]   <= exp_sum[26:0] + 1'b1;
                         result[63:28]  <= mant_prod[72:37];
                     end else begin
                         result[0]      <= sign_r;
@@ -155,10 +151,18 @@ module gpioemu(
                     state <= DONE;
                 end
 
+                /* -------------------------
+                   DONE – wynik dostępny
+                   ------------------------- */
                 DONE: begin
                     status <= 32'h2; // done
+                    if (!start)
+                        state <= IDLE;
                 end
 
+                /* -------------------------
+                   BEZPIECZNY DEFAULT
+                   ------------------------- */
                 default: begin
                     state  <= IDLE;
                     status <= 32'h0;
