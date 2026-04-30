@@ -160,6 +160,12 @@ module gpioemu(
                         result[63:28]  <= mant_prod[71:36];
                     end
                 end
+
+                default: begin
+                    state  <= state;
+                    status <= status;
+                    result <= result;
+                end
             endcase
         end
     end
