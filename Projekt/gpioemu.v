@@ -1,22 +1,17 @@
-/* verilator lint_off UNUSED */
-/* verilator lint_off UNDRIVEN */
-/* verilator lint_off MULTIDRIVEN */
-/* verilator lint_off COMBDLY */
-
 module gpioemu(
-    input            n_reset,
-    input  [15:0]    saddress,
-    input            srd,
-    input            swr,
-    input  [31:0]    sdata_in,
+    input             n_reset,
+    input  [15:0]     saddress,
+    input             srd,
+    input             swr,
+    input  [31:0]     sdata_in,
     output reg [31:0] sdata_out,
 
-    input  [31:0]    gpio_in,
-    input            gpio_latch,
-    output [31:0]    gpio_out,
+    input  [31:0]     gpio_in,
+    input             gpio_latch,
+    output [31:0]     gpio_out,
 
-    input            clk,
-    output [31:0]    gpio_in_s_insp
+    input             clk,
+    output [31:0]     gpio_in_s_insp
 );
 
     /* ============================================================
@@ -29,38 +24,56 @@ module gpioemu(
     assign gpio_out       = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
 
-    always @(*) begin
-        sdata_in_s = sdata_in;
-    end
+    always @(*) sdata_in_s = sdata_in;
 
-    always @(posedge gpio_latch or negedge n_reset) begin
-        if (!n_reset)
-            gpio_in_s <= 32'h0;
-        else
-            gpio_in_s <= gpio_in;
-    end
+    always @(posedge gpio_latch or negedge n_reset)
+        if (!n_reset) gpio_in_s <= 32'h0;
+        else          gpio_in_s <= gpio_in;
 
     /* ============================================================
-       REJESTRY ARGUMENTÓW I WYNIKU
+       REJESTRY MMIO
        ============================================================ */
     reg [63:0] arg1;
     reg [63:0] arg2;
-    reg [63:0] result;
+    reg        start_mmio;   // asynchroniczny bit z CPU
 
     /* ============================================================
-       REJESTRY STERUJĄCE
+       SYNCHRONIZACJA START (KRYTYCZNE!)
        ============================================================ */
-    reg        start;      // request z CPU (MMIO)
-    reg [31:0] status;     // 0=idle, 1=busy, 2=done
+    reg start_sync1, start_sync2;
+    reg start_sync2_d;
+
+    wire start_evt;
+
+    always @(posedge clk or negedge n_reset) begin
+        if (!n_reset) begin
+            start_sync1   <= 1'b0;
+            start_sync2   <= 1'b0;
+            start_sync2_d <= 1'b0;
+        end else begin
+            start_sync1   <= start_mmio;
+            start_sync2   <= start_sync1;
+            start_sync2_d <= start_sync2;
+        end
+    end
+
+    assign start_evt = start_sync2 & ~start_sync2_d; // impuls 1‑cyklowy
+
+    /* ============================================================
+       REJESTRY WYNIKU / STATUSU
+       ============================================================ */
+    reg [63:0] result;
+    reg [31:0] status;      // 0=idle, 1=busy, 2=done
 
     /* ============================================================
        FSM
        ============================================================ */
-    reg [1:0] state;
     localparam IDLE   = 2'd0;
     localparam CALC   = 2'd1;
     localparam FINISH = 2'd2;
     localparam DONE   = 2'd3;
+
+    reg [1:0] state;
 
     /* ============================================================
        PARAMETRY FP
@@ -78,20 +91,20 @@ module gpioemu(
     reg [73:0] mant_prod;
 
     /* ============================================================
-       ZAPIS Z CPU (MMIO)
+       ZAPIS MMIO (ASYNC)
        ============================================================ */
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
-            arg1  <= 64'h0;
-            arg2  <= 64'h0;
-            start <= 1'b0;
+            arg1       <= 64'h0;
+            arg2       <= 64'h0;
+            start_mmio <= 1'b0;
         end else begin
             case (saddress)
                 16'h0100: arg1[63:32] <= sdata_in_s;
                 16'h0108: arg1[31:0]  <= sdata_in_s;
                 16'h00F0: arg2[63:32] <= sdata_in_s;
                 16'h00F8: arg2[31:0]  <= sdata_in_s;
-                16'h00D0: start       <= sdata_in_s[0];
+                16'h00D0: start_mmio  <= sdata_in_s[0];
                 default: ;
             endcase
         end
@@ -102,29 +115,23 @@ module gpioemu(
        ============================================================ */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
-            state     <= IDLE;
-            status    <= 32'h0;
-            result    <= 64'h0;
-            mant_prod <= 74'd0;
-            exp_sum   <= 28'd0;
-            sign_r    <= 1'b0;
+            state      <= IDLE;
+            status     <= 32'h0;
+            result     <= 64'h0;
+            mant_prod  <= 74'd0;
+            exp_sum    <= 28'd0;
+            sign_r     <= 1'b0;
         end else begin
             case (state)
 
-                /* -------------------------
-                   IDLE – oczekiwanie na start
-                   ------------------------- */
                 IDLE: begin
                     status <= 32'h0;
-                    if (start)
+                    if (start_evt)
                         state <= CALC;
                 end
 
-                /* -------------------------
-                   CALC – obliczenia pośrednie
-                   ------------------------- */
                 CALC: begin
-                    status    <= 32'h1;  // busy
+                    status    <= 32'h1; // busy
                     mant_prod <= mant1_ext * mant2_ext;
                     exp_sum   <= {1'b0, arg1[27:1]} +
                                  {1'b0, arg2[27:1]} -
@@ -133,9 +140,6 @@ module gpioemu(
                     state     <= FINISH;
                 end
 
-                /* -------------------------
-                   FINISH – składanie wyniku
-                   ------------------------- */
                 FINISH: begin
                     if (arg1_is_zero || arg2_is_zero)
                         result <= 64'h0;
@@ -151,18 +155,11 @@ module gpioemu(
                     state <= DONE;
                 end
 
-                /* -------------------------
-                   DONE – wynik dostępny
-                   ------------------------- */
                 DONE: begin
                     status <= 32'h2; // done
-                    if (!start)
-                        state <= IDLE;
+                    state  <= IDLE;  // AUTOMATYCZNY POWRÓT
                 end
 
-                /* -------------------------
-                   BEZPIECZNY DEFAULT
-                   ------------------------- */
                 default: begin
                     state  <= IDLE;
                     status <= 32'h0;
@@ -172,7 +169,7 @@ module gpioemu(
     end
 
     /* ============================================================
-       ODCZYT Z CPU
+       ODCZYT MMIO
        ============================================================ */
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset)
