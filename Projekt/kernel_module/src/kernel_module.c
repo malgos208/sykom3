@@ -8,13 +8,12 @@
 #include <linux/ctype.h>
 #include <asm/io.h>
 #include <linux/types.h>
-#include <linux/math64.h>
 
 MODULE_INFO(intree, "Y");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Student SYKOM");
-MODULE_DESCRIPTION("FP64 multiplier (PROCFS, full scientific format)");
-MODULE_VERSION("0.3");
+MODULE_DESCRIPTION("FP64 multiplier (PROCFS, simple conversion)");
+MODULE_VERSION("0.4");
 
 #define SYKT_GPIO_BASE_ADDR  (0x00100000)
 #define SYKT_GPIO_SIZE       (0x8000)
@@ -26,38 +25,34 @@ static void __iomem *baseptr;
 static void __iomem *arg1_h, *arg1_l, *arg2_h, *arg2_l;
 static void __iomem *ctrl, *status, *res_h, *res_l;
 
-/* ---------- Konwersja tekstu na wewnętrzny 64-bitowy format ----------
- * Format: bit0 = znak (0 dodatni, 1 ujemny)
- *         bity 1-27 = wykładnik (z biasem BIAS)
- *         bity 28-63 = mantysa (36 bitów, z ukrytą jedynką)
- */
+/* Konwersja napisu naukowego na reprezentację 64-bitową */
 static int parse_fp(const char *buf, u64 *val)
 {
     const char *p = buf;
     int sign = 0;
-    u64 int_part = 0;      // część całkowita
-    u64 frac_part = 0;      // część ułamkowa (licznik)
-    int frac_digits = 0;    // liczba cyfr ułamkowych
-    int exp10 = 0;          // wykładnik dziesiętny (po 'e')
-    __int128 v = 0;         // wartość jako liczba wymierna: v = int_part + frac_part/10^frac_digits
-    __int128 m = 0;         // mantysa przed normalizacją
+    u64 int_part = 0, frac_part = 0;
+    int frac_digits = 0;
+    int exp10 = 0;
+    u64 v;
     int bin_exp = 0;
+    u64 mantissa;
+    int fin_exp;
 
-    /* 1. Znak */
-    if (*p == '-') { sign = 1; p++; }
+    /* znak */
+    if (*p == '-') { sign = 1; p++; } 
     else if (*p == '+') p++;
 
-    /* 2. Część całkowita */
+    /* część całkowita */
     while (isdigit(*p)) {
         int_part = int_part * 10 + (*p - '0');
         p++;
     }
 
-    /* 3. Część ułamkowa (opcjonalna) */
+    /* część ułamkowa */
     if (*p == '.') {
         p++;
         while (isdigit(*p)) {
-            if (frac_digits < 18) { // ograniczenie precyzji
+            if (frac_digits < 9) {  // 9 cyfr znaczących (wystarczy dla 36-bit mantysy)
                 frac_part = frac_part * 10 + (*p - '0');
                 frac_digits++;
             }
@@ -65,7 +60,7 @@ static int parse_fp(const char *buf, u64 *val)
         }
     }
 
-    /* 4. Wykładnik 'e' */
+    /* wykładnik 'e' */
     if (*p == 'e' || *p == 'E') {
         p++;
         int e_sign = 1;
@@ -79,14 +74,15 @@ static int parse_fp(const char *buf, u64 *val)
         exp10 = e_sign * e_val;
     }
 
-    /* Sprawdź koniec napisu */
     while (isspace(*p)) p++;
     if (*p != '\0') return -EINVAL;
 
-    /* 5. Oblicz wartość jako liczbę wymierną: v = (int_part * 10^frac_digits + frac_part) * 10^(exp10 - frac_digits) */
+    /* tworzymy v = int_part * 10^frac_digits + frac_part */
     v = int_part;
     if (frac_digits > 0) {
-        v = v * (__int128)pow10(frac_digits) + frac_part;
+        u64 mult = 1;
+        for (int i = 0; i < frac_digits; i++) mult *= 10;
+        v = v * mult + frac_part;
         exp10 -= frac_digits;
     }
 
@@ -95,91 +91,56 @@ static int parse_fp(const char *buf, u64 *val)
         return 0;
     }
 
-    /* 6. Normalizacja binarna: chcemy v * 10^exp10 = m * 2^bin_exp, gdzie m w [2^36, 2^37) */
-    /* Najpierw sprowadźmy do postaci m0 * 2^b0 */
-    m = v;
-    bin_exp = 0;
-
-    /* 6a. Przetwarzamy wykładnik dziesiętny: mnożymy/dzielimy przez 5^k * 2^k */
+    /* skalujemy przez 10^exp10 (ograniczamy zakres) */
     if (exp10 > 0) {
         for (int i = 0; i < exp10; i++) {
-            m = m * 10;
-            /* sprawdź przepełnienie – max około 2^120 */
-            if (m > ((__int128)1 << 120)) return -EINVAL;
+            if (v > (U64_MAX / 10)) return -EINVAL;
+            v *= 10;
         }
     } else if (exp10 < 0) {
         for (int i = 0; i < -exp10; i++) {
-            m = m / 10;   // tracimy część ułamkową, ale dla testów wystarczy
+            v /= 10;   // straty akceptowalne dla testów
         }
     }
 
-    /* 6b. Normalizacja binarna do przedziału [2^36, 2^37) */
-    while (m >= ((__int128)1 << 37)) {
-        m >>= 1;
+    /* normalizacja binarna do [2^36, 2^37) */
+    while (v >= (1ULL << 37)) {
+        v >>= 1;
         bin_exp++;
     }
-    while (m < ((__int128)1 << 36)) {
-        m <<= 1;
+    while (v < (1ULL << 36)) {
+        v <<= 1;
         bin_exp--;
     }
 
-    /* 6c. Ukryta jedynka */
-    u64 mantissa = (u64)(m - ((__int128)1 << 36));
-
-    /* 6d. Wykładnik końcowy z biasem */
-    int fin_exp = bin_exp + BIAS;
+    mantissa = v - (1ULL << 36);   // ukryta jedynka usunięta
+    fin_exp = bin_exp + BIAS;
     if (fin_exp < 0 || fin_exp > 0x7FFFFFF) return -EINVAL;
 
-    /* 7. Złóż wynik 64-bitowy: [63:28]=mantissa, [27:1]=fin_exp, [0]=sign */
     *val = ((u64)mantissa << 28) | ((u64)fin_exp << 1) | sign;
     return 0;
 }
 
-/* pomocnicza funkcja do potęgi 10 */
-static __int128 pow10(int n)
-{
-    __int128 r = 1;
-    for (int i = 0; i < n; i++) r *= 10;
-    return r;
-}
-
-/* ---------- Formatowanie wyniku (64-bit na napis naukowy) ---------- */
+/* Formatowanie wyniku (uproszczone) */
 static int format_fp(u64 val, char *buf, size_t len)
 {
     if (val == 0)
         return snprintf(buf, len, "0.0e0\n");
 
     int sign = (val & 1) ? -1 : 1;
-    int exp_bias = (val >> 1) & 0x7FFFFFF;   // 27 bitów
+    int exp_bias = (val >> 1) & 0x7FFFFFF;
     int exp = exp_bias - BIAS;
-    u64 mant = ((val >> 28) & 0xFFFFFFFFFULL) | (1ULL << 36); // dodaj ukrytą jedynkę
+    u64 mant = ((val >> 28) & 0xFFFFFFFFFULL) | (1ULL << 36);
 
-    /* Zamień na liczbę całkowitą: mant * 2^exp */
-    __int128 value = mant;
-    if (exp > 0) {
-        for (int i = 0; i < exp; i++) value <<= 1;
-    } else if (exp < 0) {
-        for (int i = 0; i < -exp; i++) value >>= 1;
-    }
+    /* wyciągamy część całkowitą i ułamkową (przybliżoną) */
+    u64 int_part = mant >> 36;
+    u64 frac_part = ((mant & ((1ULL << 36)-1)) * 1000000ULL) >> 36;
 
-    /* Wyznacz wykładnik dziesiętny i mantysę dziesiętną */
-    int exp10 = 0;
-    while (value >= ((__int128)10 << 36)) {
-        value = value / 10;
-        exp10++;
-    }
-    while (value < (1ULL << 36)) {
-        value *= 10;
-        exp10--;
-    }
-
-    u64 int_part = (u64)(value >> 36);
-    u64 frac_part = (u64)((value & ((1ULL << 36) - 1)) * 1000000ULL) >> 36;
     return snprintf(buf, len, "%s%llu.%06llue%d\n",
-                    sign < 0 ? "-" : "", int_part, frac_part, exp10);
+                    sign < 0 ? "-" : "", int_part, frac_part, exp);
 }
 
-/* ---------- Obsługa PROCFS – bez zmian (oprócz drobnej korekty) ---------- */
+/* ----- PROC FS ops ----- */
 static ssize_t arg_write(struct file *f, const char __user *ubuf,
                          size_t count, loff_t *ppos,
                          void __iomem *high, void __iomem *low)
@@ -211,13 +172,10 @@ static ssize_t ctstma_write(struct file *f, const char __user *ubuf, size_t coun
     kbuf[count] = '\0';
     if (kstrtol(kbuf, 10, &cmd)) return -EINVAL;
     printk(KERN_INFO "WRITE CTRL addr=%p val=%ld\n", ctrl, cmd);
-    if (cmd == 0) {
-        iowrite32(0, ctrl);
-    } else if (cmd == 1) {
-        iowrite32(1, ctrl);
-    } else {
+    if (cmd == 0 || cmd == 1)
+        iowrite32(cmd, ctrl);
+    else
         return -EINVAL;
-    }
     *ppos += count;
     return count;
 }
