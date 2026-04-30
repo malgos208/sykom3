@@ -92,6 +92,10 @@ module gpioemu(
     wire [73:0] mant2_ext = arg2_is_zero ? 74'd0
                           : {37'd0, 1'b1, arg2[63:28]};
 
+    wire [147:0] mant_prod_full;
+    assign mant_prod_full = mant1_ext * mant2_ext;
+
+
     /* --- rejestry pośrednie (poprawione szerokości) --- */
     reg        sign_r;
     reg [26:0] exp_sum;          // dokładnie 27 bitów – bez UNUSED
@@ -139,7 +143,7 @@ module gpioemu(
 
                 CALC: begin
                     status    <= 32'h1; // busy
-                    mant_prod <= (mant1_ext * mant2_ext)[73:36];
+                    mant_prod <= mant_prod_full[73:36];
                     exp_sum   <= arg1[27:1] + arg2[27:1] - BIAS;
                     sign_r    <= arg1[0] ^ arg2[0];
                     state     <= FINISH;
