@@ -18,14 +18,25 @@ module gpioemu(
 );
 
     /* =========================
-       Rejestry wymagane przez API
+       REJESTRY GPIO / MAGISTRALI
        ========================= */
     reg [31:0] gpio_in_s;
     reg [31:0] gpio_out_s;
     reg [31:0] sdata_in_s;
 
+    assign gpio_out = gpio_out_s;
+    assign gpio_in_s_insp = gpio_in_s;
+    always @(*) sdata_in_s = sdata_in;
+
+    always @(posedge gpio_latch or negedge n_reset) begin
+        if (!n_reset)
+            gpio_in_s <= 0;
+        else
+            gpio_in_s <= gpio_in;
+    end
+
     /* =========================
-       Rejestry mapowane w SoC
+       REJESTRY MAPOWANE W SoC
        ========================= */
     reg [31:0] arg1_h, arg1_l;
     reg [31:0] arg2_h, arg2_l;
@@ -34,55 +45,7 @@ module gpioemu(
     reg [31:0] res_h, res_l;
 
     /* =========================
-       FSM
-       ========================= */
-    reg [1:0] state;
-    localparam S_IDLE = 2'd0,
-               S_CALC = 2'd1,
-               S_DONE = 2'd2;
-
-    /* =========================
-       Rejestry robocze (ODCIĘCIE MAGISTRALI)
-       ========================= */
-    reg [63:0] arg1_r;
-    reg [63:0] arg2_r;
-
-    reg [73:0]        prod_reg;
-    reg signed [27:0] exp_reg;
-    reg               sign_reg;
-
-    localparam [26:0] BIAS = 27'd67108864; // 2^26
-
-    /* =========================
-       Wyciąganie pól – TYLKO z kopii
-       Format:
-       [63:28] mantysa (36)
-       [27:1]  exponent (27)
-       [0]     znak
-       ========================= */
-    wire        sign1 = arg1_r[0];
-    wire        sign2 = arg2_r[0];
-    wire [26:0] exp1  = arg1_r[27:1];
-    wire [26:0] exp2  = arg2_r[27:1];
-    wire [35:0] mant1 = arg1_r[63:28];
-    wire [35:0] mant2 = arg2_r[63:28];
-
-    /* =========================
-       GPIO
-       ========================= */
-    assign gpio_out = gpio_out_s;
-    assign gpio_in_s_insp = gpio_in_s;
-    always @(*) sdata_in_s = sdata_in;
-
-    always @(posedge gpio_latch or negedge n_reset) begin
-        if (!n_reset)
-            gpio_in_s <= 32'd0;
-        else
-            gpio_in_s <= gpio_in;
-    end
-
-    /* =========================
-       Zapis z CPU
+       ZAPIS Z CPU
        ========================= */
     always @(posedge swr or negedge n_reset) begin
         if (!n_reset) begin
@@ -102,7 +65,37 @@ module gpioemu(
     end
 
     /* =========================
-       Normalizacja
+       FSM
+       ========================= */
+    reg [1:0] state;
+    localparam S_IDLE = 2'd0,
+               S_CALC = 2'd1,
+               S_DONE = 2'd2;
+
+    /* =========================
+       REJESTRY ROBOCZE (STABILNE)
+       ========================= */
+    reg [63:0] arg1_r;
+    reg [63:0] arg2_r;
+
+    reg [73:0]        prod_reg;
+    reg signed [27:0] exp_reg;
+    reg               sign_reg;
+
+    localparam [26:0] BIAS = 27'd67108864; // 2^26
+
+    /* =========================
+       WYCIĄGNIĘCIE PÓL (1:1)
+       ========================= */
+    wire        sign1 = arg1_r[0];
+    wire        sign2 = arg2_r[0];
+    wire [26:0] exp1  = arg1_r[27:1];
+    wire [26:0] exp2  = arg2_r[27:1];
+    wire [35:0] mant1 = arg1_r[63:28];
+    wire [35:0] mant2 = arg2_r[63:28];
+
+    /* =========================
+       NORMALIZACJA
        ========================= */
     wire signed [27:0] final_exp_signed =
         exp_reg + (prod_reg[73] ? 28'd1 : 28'd0);
@@ -113,7 +106,7 @@ module gpioemu(
                       : prod_reg[71:36];
 
     /* =========================
-       FSM + obliczenia
+       FSM + OBLICZENIA
        ========================= */
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
@@ -130,47 +123,51 @@ module gpioemu(
         end else begin
             case (state)
 
+                /* -------------------------
+                   IDLE — tylko zatrzaśnięcie
+                   ------------------------- */
                 S_IDLE: begin
                     status_reg <= 0;
                     if (ctrl_reg[0]) begin
-                        /* ZATRZAŚNIĘCIE ARGUMENTÓW */
                         arg1_r <= {arg1_h, arg1_l};
                         arg2_r <= {arg2_h, arg2_l};
-
-                        if ({arg1_h, arg1_l} == 64'd0 ||
-                            {arg2_h, arg2_l} == 64'd0) begin
-                            res_h      <= 0;
-                            res_l      <= 0;
-                            status_reg <= 2;
-                            state      <= S_DONE;
-                        end else begin
-                            prod_reg <= {1'b1, mant1} * {1'b1, mant2};
-                            exp_reg  <=
-                                $signed({1'b0, exp1}) +
-                                $signed({1'b0, exp2}) -
-                                $signed({1'b0, BIAS});
-                            sign_reg <= sign1 ^ sign2;
-                            status_reg <= 1;
-                            state <= S_CALC;
-                        end
+                        status_reg <= 1; // busy
+                        state <= S_CALC;
                     end
                 end
 
+                /* -------------------------
+                   CALC — faktyczne liczenie
+                   ------------------------- */
                 S_CALC: begin
+                    if (arg1_r == 64'd0 || arg2_r == 64'd0) begin
+                        prod_reg <= 0;
+                        exp_reg  <= 0;
+                        sign_reg <= 0;
+                    end else begin
+                        prod_reg <= {1'b1, mant1} * {1'b1, mant2};
+                        exp_reg  <=
+                            $signed({1'b0, exp1}) +
+                            $signed({1'b0, exp2}) -
+                            $signed({1'b0, BIAS});
+                        sign_reg <= sign1 ^ sign2;
+                    end
                     state <= S_DONE;
                 end
 
+                /* -------------------------
+                   DONE — zapis wyniku
+                   ------------------------- */
                 S_DONE: begin
                     if (final_exp_signed < 0 ||
                         final_exp_signed > 28'h7FFFFFF) begin
                         res_h <= 0;
                         res_l <= 0;
                     end else begin
-                        /* ZAPIS WYNIKU – 36b mantysy → 2 rejestry */
                         res_h <= new_mant[35:4];
                         res_l <= { new_mant[3:0], new_exp, sign_reg };
                     end
-                    status_reg <= 2;
+                    status_reg <= 2; // done
                     if (!ctrl_reg[0])
                         state <= S_IDLE;
                 end
@@ -181,7 +178,7 @@ module gpioemu(
     end
 
     /* =========================
-       Odczyt dla CPU
+       ODCZYT DLA CPU
        ========================= */
     always @(*) begin
         case (saddress)
