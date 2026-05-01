@@ -1,273 +1,214 @@
 #include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/ioport.h>
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
-#include <linux/version.h>
-#include <asm/errno.h>
+#include <linux/ctype.h>
 #include <asm/io.h>
+#include <linux/math64.h>
 
-MODULE_INFO(intree, "Y");
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Ignacy Kopka");
-MODULE_DESCRIPTION("FPU Kernel Module for SYKOM project");
-MODULE_VERSION("PRO-ORIGINAL");
+MODULE_AUTHOR("Student SYKOM");
+MODULE_DESCRIPTION("FP64 multiplier (simple PROCFS)");
 
-#define SYKT_GPIO_BASE_ADDR (0x00100000)
-#define SYKT_GPIO_SIZE      (0x8000)
-#define SYKT_EXIT           (0x3333)
-#define SYKT_EXIT_CODE      (0x7F)
+#define BASE_ADDR   0x00100000
+#define BIAS        67108864ULL   // 2^26
 
-// TWOJE ORYGINALNE ADRESY Z ZADANIA
-#define REG_ARG1_LO 0x0180
-#define REG_ARG1_HI 0x0188
-#define REG_ARG2_LO 0x0190
-#define REG_ARG2_HI 0x0198
-#define REG_STATUS  0x01A0
-#define REG_RES_LO  0x01A8
-#define REG_RES_HI  0x01B0
-#define REG_CTRL    0x01B8
+static void __iomem *base;
+static void __iomem *arg1_h, *arg1_l, *arg2_h, *arg2_l;
+static void __iomem *ctrl, *status, *res_h, *res_l;
 
-#define PROCFS_MAX_SIZE 128
+/* Uproszczone parsowanie liczby w notacji naukowej (np. "2.5e0") */
+static int parse_fp(const char *buf, u64 *val)
+{
+    const char *p = buf;
+    u8 sign = 0;
+    u64 int_part = 0, frac_part = 0;
+    int frac_digits = 0;
+    int exp = 0;
 
-void __iomem *baseptr;
-static struct proc_dir_entry *proc_a1koig, *proc_a2koig, *proc_rekoig, *proc_stkoig, *proc_ctkoig;
+    /* znak */
+    if (*p == '-') { sign = 1; p++; }
+    else if (*p == '+') p++;
 
-static void parse_scientific_to_fpu(const char *str, u32 *hi, u32 *lo) {
-    u32 integer_part = 0, fraction_part = 0, fraction_digits = 0;
-    int exp_part = 0, sign = 0, exp_sign = 1, i = 0;
-    *hi = 0; *lo = 0;
+    /* część całkowita */
+    while (isdigit(*p))
+        int_part = int_part * 10 + (*p++ - '0');
 
-    if (str[i] == '-') { sign = 1; i++; } else if (str[i] == '+') { i++; }
-    while (str[i] >= '0' && str[i] <= '9') { integer_part = integer_part * 10 + (str[i] - '0'); i++; }
-    if (str[i] == '.') {
-        i++;
-        while (str[i] >= '0' && str[i] <= '9') {
-            if (fraction_digits < 9) { fraction_part = fraction_part * 10 + (str[i] - '0'); fraction_digits++; }
-            i++;
-        }
-    }
-    if (str[i] == 'e' || str[i] == 'E') {
-        i++;
-        if (str[i] == '-') { exp_sign = -1; i++; } else if (str[i] == '+') { i++; }
-        while (str[i] >= '0' && str[i] <= '9') { exp_part = exp_part * 10 + (str[i] - '0'); i++; }
-    }
-    if (integer_part == 0 && fraction_part == 0) { *hi = (sign << 21); *lo = 0; return; }
-
-    int total_exp10 = (exp_part * exp_sign) - fraction_digits;
-    u64 value = integer_part;
-    int j;
-    for (j = 0; j < fraction_digits; j++) value = (value * 10);
-    value += fraction_part;
-    
-    int binary_exp = 52;
-    int shift_up = 0;
-    while (value > 0 && value < (1ULL << 60)) { value <<= 1; shift_up++; }
-    binary_exp -= shift_up;
-
-    while(total_exp10 > 0) {
-        if (value >= (1ULL << 60)) { value >>= 4; binary_exp += 4; }
-        u64 val_8 = value << 3; u64 val_2 = value << 1;
-        value = val_8 + val_2;
-        total_exp10--;
-    }
-    while(total_exp10 < 0) {
-        u64 temp = 0, rem = value; int bits = 63;
-        while (bits >= 0) {
-            temp <<= 1; u64 masked = (rem >> bits);
-            if (masked >= 10) { temp |= 1; rem -= (10ULL << bits); }
-            bits--;
-        }
-        value = temp;
-        while (value > 0 && value < (1ULL << 60)) { value <<= 1; binary_exp--; }
-        total_exp10++;
-    }
-
-    if (value > 0) {
-        // Wyrównanie do 52 bitów
-        while (value < (1ULL << 52)) { value <<= 1; binary_exp--; }
-        while (value >= (1ULL << 53)) { value >>= 1; binary_exp++; }
-        
-        // Przesuwamy ułamek o 1 bit w lewo, aby wypełnić niestandardową 53-bitową mantysę
-        value <<= 1;
-    } else { *hi = (sign << 21); *lo = 0; return; }
-
-    u32 actual_exp = (binary_exp + 511) & 0x3FF; 
-    u32 mantissa_hi = (value >> 32) & 0x1FFFFF; // Maska na 21 bitów HI
-    u32 mantissa_lo = (value & 0xFFFFFFFF);     // Maska na 32 bity LO
-    
-    *hi = (actual_exp << 22) | (sign << 21) | mantissa_hi;
-    *lo = mantissa_lo;
-}
-
-// Bezpieczna funkcja dzieląca 64-bitową liczbę przez 10 dla 32-bitowych jąder
-static u32 div_u64_by_10(u64 *val) {
-    u64 q = 0, rem = *val;
-    int i;
-    for (i = 60; i >= 0; i--) {
-        if ((rem >> i) >= 10) {
-            q |= (1ULL << i);
-            rem -= (10ULL << i);
-        }
-    }
-    *val = q;
-    return (u32)rem;
-}
-
-// Formatowanie wyliczonych bitów na system dziesiętny naukowy z zachowaniem surowego RAW
-static void format_fpu_to_scientific(u32 hi, u32 lo, char *buf) {
-    u32 exp = (hi >> 22) & 0x3FF;
-    u32 sign = (hi >> 21) & 0x1;
-    u32 mantissa_hi = hi & 0x1FFFFF;
-    u64 mantissa = (((u64)mantissa_hi) << 32) | lo;
-
-    // Obsługa zera
-    if (exp == 0 && mantissa == 0) {
-        snprintf(buf, PROCFS_MAX_SIZE, "RAW: HI=0x%08X LO=0x%08X | DEC: %s0.000000e0\n", hi, lo, sign ? "-" : "");
-        return;
-    }
-    // Obsługa nieskończoności
-    if (exp == 0x3FF) {
-        snprintf(buf, PROCFS_MAX_SIZE, "RAW: HI=0x%08X LO=0x%08X | DEC: %sInf\n", hi, lo, sign ? "-" : "+");
-        return;
-    }
-
-    // Dodanie ukrytego bitu jedności
-    u64 val = (1ULL << 53) | mantissa;
-    int bin_exp = (int)exp - 511 - 53;
-    int dec_exp = 0;
-
-    // Przeliczenie potęg dwójki na potęgi dziesiątki (z utrzymaniem precyzji w 64 bitach)
-    while (bin_exp > 0) {
-        if (val >= (0xFFFFFFFFFFFFFFFFULL / 2)) {
-            div_u64_by_10(&val);
-            dec_exp++;
-        } else {
-            val <<= 1;
-            bin_exp--;
+    /* część ułamkowa */
+    if (*p == '.') {
+        p++;
+        while (isdigit(*p) && frac_digits < 9) {
+            frac_part = frac_part * 10 + (*p++ - '0');
+            frac_digits++;
         }
     }
 
-    while (bin_exp < 0) {
-        if (val >= (0xFFFFFFFFFFFFFFFFULL / 5)) {
-            div_u64_by_10(&val);
-            dec_exp++;
-        } else {
-            val *= 5; // To działa jak pomnożenie przez 10 i podzielenie przez 2
-            bin_exp++;
-            dec_exp--;
+    /* wykładnik 'e' */
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        int e_sign = 1;
+        if (*p == '-') { e_sign = -1; p++; }
+        else if (*p == '+') p++;
+        int e = 0;
+        while (isdigit(*p)) e = e * 10 + (*p++ - '0');
+        exp = e_sign * e;
+    }
+
+    /* białe znaki i koniec napisu */
+    while (isspace(*p)) p++;
+    if (*p != '\0') return -EINVAL;
+
+    if (int_part == 0 && frac_part == 0) {
+        *val = 0;
+        return 0;
+    }
+
+    /* Tworzymy liczbę całkowitą v = int_part * 10^frac_digits + frac_part */
+    u64 v = int_part;
+    if (frac_digits > 0) {
+        u64 mul = 1;
+        for (int i = 0; i < frac_digits; i++) mul *= 10;
+        v = v * mul + frac_part;
+        exp -= frac_digits;
+    }
+
+    /* Skalowanie przez 10^exp (ograniczone, dla testów wystarczy) */
+    if (exp > 0) {
+        for (int i = 0; i < exp; i++) {
+            if (v > (U64_MAX / 10)) return -EINVAL;
+            v *= 10;
         }
+    } else if (exp < 0) {
+        for (int i = 0; i < -exp; i++) do_div(v, 10);
     }
 
-    // Normalizacja ułamka do 7 precyzyjnych cyfr dziesiętnych
-    while (val >= 10000000ULL) {
-        div_u64_by_10(&val);
-        dec_exp++;
-    }
-    while (val > 0 && val < 1000000ULL) {
-        val *= 10;
-        dec_exp--;
-    }
+    /* Normalizacja binarna do przedziału [2^36, 2^37) */
+    int bin_exp = 0;
+    while (v >= (1ULL << 37)) { v >>= 1; bin_exp++; }
+    while (v <  (1ULL << 36)) { v <<= 1; bin_exp--; }
 
-    // Wyciągnięcie końcowych składników
-    int e = dec_exp + 6;
-    u32 val32 = (u32)val; 
-    u32 integer_part = val32 / 1000000;
-    u32 fraction_part = val32 % 1000000;
+    u64 mantissa = v - (1ULL << 36);           // 36 bitów
+    int fin_exp = bin_exp + BIAS;
+    if (fin_exp < 0 || fin_exp > 0x7FFFFFF) return -EINVAL;
 
-    // Połączenie RAW i DEC w jeden czytelny łańcuch znaków
-    snprintf(buf, PROCFS_MAX_SIZE, "RAW: HI=0x%08X LO=0x%08X | DEC: %s%u.%06ue%d\n", 
-             hi, lo, sign ? "-" : "", integer_part, fraction_part, e);
-}
-
-static ssize_t a1koig_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos) {
-    char buf[PROCFS_MAX_SIZE]; u32 hi, lo;
-    if (count >= PROCFS_MAX_SIZE) count = PROCFS_MAX_SIZE - 1;
-    if (copy_from_user(buf, ubuf, count)) return -EFAULT;
-    buf[count] = '\0';
-    parse_scientific_to_fpu(buf, &hi, &lo);
-    writel(lo, baseptr + REG_ARG1_LO);
-    writel(hi, baseptr + REG_ARG1_HI);
-    return count;
-}
-
-static ssize_t a2koig_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos) {
-    char buf[PROCFS_MAX_SIZE]; u32 hi, lo;
-    if (count >= PROCFS_MAX_SIZE) count = PROCFS_MAX_SIZE - 1;
-    if (copy_from_user(buf, ubuf, count)) return -EFAULT;
-    buf[count] = '\0';
-    parse_scientific_to_fpu(buf, &hi, &lo);
-    writel(lo, baseptr + REG_ARG2_LO);
-    writel(hi, baseptr + REG_ARG2_HI);
-    return count;
-}
-
-static ssize_t ctkoig_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos) {
-    char buf[16];
-    if (count >= sizeof(buf)) count = sizeof(buf) - 1;
-    if (copy_from_user(buf, ubuf, count)) return -EFAULT;
-    buf[count] = '\0';
-    if (buf[0] == '1') writel(1, baseptr + REG_CTRL);
-    else if (buf[0] == '0') writel(0, baseptr + REG_CTRL);
-    return count;
-}
-
-static ssize_t rekoig_read(struct file *file, char __user *ubuf, size_t count, loff_t *ppos) {
-    char buf[PROCFS_MAX_SIZE];
-    if (*ppos > 0) return 0; // Usunięto wadliwy warunek 'count < ...'
-    
-    u32 lo = readl(baseptr + REG_RES_LO);
-    u32 hi = readl(baseptr + REG_RES_HI);
-    format_fpu_to_scientific(hi, lo, buf);
-    int len = strlen(buf);
-    
-    if (count < len) return -EINVAL; // Opcjonalne zabezpieczenie przed zbyt małym buforem
-    if (copy_to_user(ubuf, buf, len)) return -EFAULT;
-    *ppos = len;
-    return len;
-}
-
-static ssize_t stkoig_read(struct file *file, char __user *ubuf, size_t count, loff_t *ppos) {
-    char buf[32];
-    if (*ppos > 0) return 0; // Usunięto wadliwy warunek
-    
-    u32 status = readl(baseptr + REG_STATUS);
-    int len = snprintf(buf, sizeof(buf), "Status: 0x%08X\n", status);
-    if (copy_to_user(ubuf, buf, len)) return -EFAULT;
-    *ppos = len;
-    return len;
-}
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
-static const struct proc_ops a1koig_ops = { .proc_write = a1koig_write };
-static const struct proc_ops a2koig_ops = { .proc_write = a2koig_write };
-static const struct proc_ops ctkoig_ops = { .proc_write = ctkoig_write };
-static const struct proc_ops rekoig_ops = { .proc_read  = rekoig_read };
-static const struct proc_ops stkoig_ops = { .proc_read  = stkoig_read };
-#else
-static const struct file_operations a1koig_ops = { .write = a1koig_write };
-static const struct file_operations a2koig_ops = { .write = a2koig_write };
-static const struct file_operations ctkoig_ops = { .write = ctkoig_write };
-static const struct file_operations rekoig_ops = { .read  = rekoig_read };
-static const struct file_operations stkoig_ops = { .read  = stkoig_read };
-#endif
-
-int my_init_module(void){
-    printk(KERN_INFO "SYKOM: Zaladowano sterownik FPU (ORYGINALNE ADRESY).\n");
-    baseptr = ioremap(SYKT_GPIO_BASE_ADDR, SYKT_GPIO_SIZE);
-    if (!baseptr) return -ENOMEM;
-    proc_a1koig = proc_create("a1koig", 0666, NULL, &a1koig_ops);
-    proc_a2koig = proc_create("a2koig", 0666, NULL, &a2koig_ops);
-    proc_rekoig = proc_create("rekoig", 0444, NULL, &rekoig_ops);
-    proc_stkoig = proc_create("stkoig", 0444, NULL, &stkoig_ops);
-    proc_ctkoig = proc_create("ctkoig", 0666, NULL, &ctkoig_ops);
+    *val = (mantissa << 28) | ((u64)fin_exp << 1) | sign;
     return 0;
 }
 
-void my_cleanup_module(void){
-    proc_remove(proc_a1koig); proc_remove(proc_a2koig); proc_remove(proc_rekoig);
-    proc_remove(proc_stkoig); proc_remove(proc_ctkoig);
-    writel(SYKT_EXIT | ((SYKT_EXIT_CODE)<<16), baseptr);
-    iounmap(baseptr);
+/* ---------- PROCFS ---------- */
+static ssize_t arg_write(struct file *f, const char __user *ubuf, size_t cnt, loff_t *off,
+                         void __iomem *high, void __iomem *low)
+{
+    char buf[64];
+    u64 val;
+    if (cnt >= sizeof(buf)) return -ENOSPC;
+    if (copy_from_user(buf, ubuf, cnt)) return -EFAULT;
+    buf[cnt] = '\0';
+    if (parse_fp(buf, &val)) return -EINVAL;
+    iowrite32(val >> 32, high);
+    iowrite32(val & 0xFFFFFFFF, low);
+    *off += cnt;
+    return cnt;
 }
-module_init(my_init_module); module_exit(my_cleanup_module);
+
+static ssize_t a1_write(struct file *f, const char __user *b, size_t c, loff_t *o)
+    { return arg_write(f, b, c, o, arg1_h, arg1_l); }
+static ssize_t a2_write(struct file *f, const char __user *b, size_t c, loff_t *o)
+    { return arg_write(f, b, c, o, arg2_h, arg2_l); }
+
+static ssize_t ctrl_write(struct file *f, const char __user *ubuf, size_t cnt, loff_t *off)
+{
+    char buf[16];
+    long cmd;
+    if (cnt >= sizeof(buf)) return -ENOSPC;
+    if (copy_from_user(buf, ubuf, cnt)) return -EFAULT;
+    buf[cnt] = '\0';
+    if (kstrtol(buf, 10, &cmd)) return -EINVAL;
+    if (cmd == 1) {
+        iowrite32(1, ctrl);
+        iowrite32(0, ctrl); // impuls!
+    }
+    else return -EINVAL;
+    *off += cnt;
+    return cnt;
+}
+
+static ssize_t status_read(struct file *f, char __user *ubuf, size_t cnt, loff_t *off)
+{
+    if (*off) return 0;
+    u32 st = ioread32(status);
+    const char *msg = st == 0 ? "idle\n" : (st == 1 ? "busy\n" : "done\n");
+    size_t len = strlen(msg);
+    if (copy_to_user(ubuf, msg, len)) return -EFAULT;
+    *off = len;
+    return len;
+}
+
+static ssize_t result_read(struct file *f, char __user *ubuf, size_t cnt, loff_t *off)
+{
+    if (*off) return 0;
+    if (ioread32(status) != 2) return -EAGAIN;
+    u64 v = ((u64)ioread32(res_h) << 32) | ioread32(res_l);
+    char buf[64];
+    if (v == 0) {
+        snprintf(buf, sizeof(buf), "0.0e0\n");
+    } else {
+        int sign = (v & 1) ? -1 : 1;
+        int exp = ((v >> 1) & 0x7FFFFFF) - BIAS;
+        u64 mant = ((v >> 28) & 0xFFFFFFFFFULL) | (1ULL << 36);
+        snprintf(buf, sizeof(buf), "%s%llu.%06llue%d\n",
+                 sign < 0 ? "-" : "", mant >> 36,
+                 ((mant & ((1ULL << 36) - 1)) * 1000000ULL) >> 36, exp);
+    }
+    size_t len = strlen(buf);
+    if (copy_to_user(ubuf, buf, len)) return -EFAULT;
+    *off = len;
+    return len;
+}
+
+static const struct file_operations a1_fops = { .write = a1_write };
+static const struct file_operations a2_fops = { .write = a2_write };
+static const struct file_operations ctrl_fops = { .write = ctrl_write };
+static const struct file_operations stat_fops = { .read = status_read };
+static const struct file_operations res_fops = { .read = result_read };
+
+static struct proc_dir_entry *proc_dir;
+
+static int __init init(void)
+{
+    printk(KERN_INFO "FP multiplier: init\n");
+    base = ioremap(BASE_ADDR, 0x8000);
+    if (!base) return -ENOMEM;
+
+    arg1_h = base + 0x100; arg1_l = base + 0x108;
+    arg2_h = base + 0x0F0; arg2_l = base + 0x0F8;
+    ctrl   = base + 0x0D0; status = base + 0x0E8;
+    res_h  = base + 0x0D8; res_l  = base + 0x0E0;
+
+    proc_dir = proc_mkdir("sykom", NULL);
+    if (!proc_dir) goto fail;
+
+    if (!proc_create("a1stma", 0220, proc_dir, &a1_fops) ||
+        !proc_create("a2stma", 0220, proc_dir, &a2_fops) ||
+        !proc_create("ctstma", 0220, proc_dir, &ctrl_fops) ||
+        !proc_create("ststma", 0444, proc_dir, &stat_fops) ||
+        !proc_create("restma", 0444, proc_dir, &res_fops))
+        goto fail_rm;
+
+    printk(KERN_INFO "FP multiplier: ready\n");
+    return 0;
+
+fail_rm: remove_proc_entry("sykom", NULL);
+fail:   iounmap(base);
+        return -ENOMEM;
+}
+
+static void __exit fini(void)
+{
+    printk(KERN_INFO "FP multiplier: cleanup\n");
+    iowrite32(0x3333 | (0x7F << 16), base);   // zakończenie emulacji
+    remove_proc_entry("sykom", NULL);
+    iounmap(base);
+}
+
+module_init(init);
+module_exit(fini);
