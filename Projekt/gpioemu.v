@@ -103,7 +103,8 @@ module gpioemu(
                 S_IDLE: begin
                     if (ctrl_reg[0]) begin
                         // Wykryto sygnał startu
-                        if ((exp1 == 0 && mant1 == 0) || (exp2 == 0 && mant2 == 0)) begin
+                        if (arg1 == 64'd0 || arg2 == 64'd0) begin
+                        //if ((exp1 == 0 && mant1 == 0) || (exp2 == 0 && mant2 == 0)) begin
                             // Przynajmniej jeden argument zerowy -> wynik zero
                             res_h <= 0;
                             res_l <= 0;
@@ -112,7 +113,9 @@ module gpioemu(
                         end else begin
                             // Mnożenie 1.mant1 * 1.mant2
                             prod_reg <= {1'b1, mant1} * {1'b1, mant2};
-                            exp_reg  <= $signed(exp1) + $signed(exp2) - $signed(BIAS);
+                            
+                    exp_reg <= $signed({1'b0, exp1}) + $signed({1'b0, exp2}) - $signed({1'b0, BIAS});
+
                             sign_reg <= sign1 ^ sign2;
                             status_reg <= 1; // busy
                             state <= S_CALC;
