@@ -137,8 +137,8 @@ module gpioemu(
                         res_h <= 0;
                         res_l <= 0;
                     end else begin
-                        res_h <= new_mant;  // [63:28]
-                        res_l <= { new_exp, sign_reg }; // [27:1][0]
+                        res_h <= new_mant[35:4];
+                        res_l <=  { new_mant[3:0], new_exp, sign_reg };
                     end
                     status_reg <= 2; // done
                     // Powrót do IDLE dopiero po wyzerowaniu bitu sterującego
