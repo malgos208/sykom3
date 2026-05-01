@@ -62,6 +62,7 @@ module gpioemu(
                 16'h00F0: a2_h <= sdata_in_s;
                 16'h00F8: a2_l <= sdata_in_s;
                 16'h00D0: ctrl_bit <= sdata_in_s[0];
+                default: ; // Nic nie rób dla nieobsłużonych adresów
             endcase
         end
     end
@@ -94,6 +95,7 @@ module gpioemu(
                     status <= 2; // done
                     if (!ctrl_bit) state <= IDLE;
                 end
+                default: state <= IDLE; // Powrót do stanu spoczynku
             endcase
         end
     end
