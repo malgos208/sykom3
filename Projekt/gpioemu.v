@@ -1,4 +1,3 @@
-// gpioemu.v
 /* verilator lint_off WIDTH */
 /* verilator lint_off UNUSED */
 /* verilator lint_off CASEINCOMPLETE */
@@ -36,7 +35,7 @@ module gpioemu(
 
     // Rejestry pomocnicze dla mnożenia
     reg [73:0] prod_reg;
-    reg signed [27:0] exp_reg;   // signed – do bezpiecznego odejmowania BIAS
+    reg signed [27:0] exp_reg;
     reg sign_reg;
 
     // BIAS = 2^26 = 67108864
@@ -77,6 +76,11 @@ module gpioemu(
             endcase
         end
     end
+
+    // Pomocnicze sygnały kombinacyjne do normalizacji (nie wewnątrz always!)
+    wire signed [27:0] final_exp_signed = exp_reg + (prod_reg[73] ? 28'd1 : 28'd0);
+    wire [26:0] new_exp = final_exp_signed[26:0];
+    wire [35:0] new_mant = prod_reg[73] ? prod_reg[72:37] : prod_reg[71:36];
 
     // Automat stanów i obliczenia (reakcja na clk)
     always @(posedge clk or negedge n_reset) begin
@@ -119,14 +123,11 @@ module gpioemu(
 
                 S_DONE: begin
                     // Normalizacja i zapis wyniku
-                    wire signed [27:0] final_exp_signed = exp_reg + (prod_reg[73] ? 28'd1 : 28'd0);
                     if (final_exp_signed < 0 || final_exp_signed > 28'h7FFFFFF) begin
                         // Przekroczenie zakresu -> zero
                         res_h <= 0;
                         res_l <= 0;
                     end else begin
-                        wire [26:0] new_exp = final_exp_signed[26:0];
-                        wire [35:0] new_mant = prod_reg[73] ? prod_reg[72:37] : prod_reg[71:36];
                         res_h <= new_mant[35:4];
                         res_l <= {new_mant[3:0], new_exp, sign_reg};
                     end
