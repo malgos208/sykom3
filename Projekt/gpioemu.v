@@ -39,10 +39,6 @@ module gpioemu(
     reg [63:0] arg1_r;
     reg [63:0] arg2_r;
 
-    // Wyciągnięcie pól z argumentów (zgodnie z formatem)
-    // wire [63:0] arg1 = {arg1_h, arg1_l};
-    // wire [63:0] arg2 = {arg2_h, arg2_l};
-
     wire sign1 = arg1_r[0];
     wire sign2 = arg2_r[0];
 
