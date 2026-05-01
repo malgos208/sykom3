@@ -42,12 +42,18 @@ module gpioemu(
     localparam [26:0] BIAS = 27'd67108864;
 
     // Wyciągnięcie pól z argumentów (zgodnie z formatem)
-    wire [35:0] mant1 = {arg1_h, arg1_l[31:28]};
-    wire [35:0] mant2 = {arg2_h, arg2_l[31:28]};
-    wire [26:0] exp1  = arg1_l[27:1];
-    wire [26:0] exp2  = arg2_l[27:1];
-    wire sign1 = arg1_l[0];
-    wire sign2 = arg2_l[0];
+    wire [63:0] arg1 = {arg1_h, arg1_l};
+    wire [63:0] arg2 = {arg2_h, arg2_l};
+
+    wire        sign1 = arg1[0];
+    wire        sign2 = arg2[0];
+
+    wire [26:0] exp1  = arg1[27:1];
+    wire [26:0] exp2  = arg2[27:1];
+
+    wire [35:0] mant1 = arg1[63:28];
+    wire [35:0] mant2 = arg2[63:28];
+
 
     assign gpio_out = gpio_out_s;
     assign gpio_in_s_insp = gpio_in_s;
@@ -106,7 +112,7 @@ module gpioemu(
                         end else begin
                             // Mnożenie 1.mant1 * 1.mant2
                             prod_reg <= {1'b1, mant1} * {1'b1, mant2};
-                            exp_reg  <= $signed({1'b0, exp1}) + $signed({1'b0, exp2}) - $signed({1'b0, BIAS});
+                            exp_reg  <= $signed(exp1) + $signed(exp2) - $signed(BIAS);
                             sign_reg <= sign1 ^ sign2;
                             status_reg <= 1; // busy
                             state <= S_CALC;
@@ -128,8 +134,8 @@ module gpioemu(
                         res_h <= 0;
                         res_l <= 0;
                     end else begin
-                        res_h <= new_mant[35:4];
-                        res_l <= {new_mant[3:0], new_exp, sign_reg};
+                        res_h <= new_mant;  // [63:28]
+                        res_l <= { new_exp, sign_reg }; // [27:1][0]
                     end
                     status_reg <= 2; // done
                     // Powrót do IDLE dopiero po wyzerowaniu bitu sterującego

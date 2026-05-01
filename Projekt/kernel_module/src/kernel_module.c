@@ -224,7 +224,7 @@ static ssize_t ctrl_write(struct file *f, const char __user *ubuf, size_t cnt, l
     buf[cnt] = '\0';
     if (kstrtol(buf, 10, &cmd)) return -EINVAL;
     if (cmd != 0 && cmd != 1) return -EINVAL;
-    iowrite32(cmd, ctrl);
+        iowrite32(cmd, ctrl);
     *off += cnt;
     return cnt;
 }
