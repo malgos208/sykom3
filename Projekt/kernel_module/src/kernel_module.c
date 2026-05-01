@@ -10,14 +10,17 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Student SYKOM");
 MODULE_DESCRIPTION("FP64 multiplier (PROCFS)");
 
-#define BASE_ADDR   0x00100000
+#define SYKT_GPIO_BASE_ADDR (0x00100000)
+#define SYKT_GPIO_SIZE      (0x8000)
+#define SYKT_EXIT           (0x3333)
+#define SYKT_EXIT_CODE      (0x7F)
 #define BIAS        67108864ULL   // 2^26
 
 static void __iomem *base;
 static void __iomem *arg1_h, *arg1_l, *arg2_h, *arg2_l;
 static void __iomem *ctrl, *status, *res_h, *res_l;
 
-// Bezpieczne dzielenie 64-bitowej zmiennej przez 10 (jak u kolegi)
+// Bezpieczne dzielenie 64-bitowej zmiennej przez 10
 static u32 div_u64_by_10(u64 *val)
 {
     u64 q = 0, rem = *val;
@@ -264,7 +267,7 @@ static struct proc_dir_entry *proc_dir;
 static int __init init(void)
 {
     printk(KERN_INFO "FP multiplier: init\n");
-    base = ioremap(BASE_ADDR, 0x8000);
+    base = ioremap(SYKT_GPIO_BASE_ADDR, SYKT_GPIO_SIZE);
     if (!base) return -ENOMEM;
 
     arg1_h = base + 0x100; arg1_l = base + 0x108;
