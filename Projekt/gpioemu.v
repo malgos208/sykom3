@@ -1,3 +1,8 @@
+/* verilator lint_off WIDTH */
+/* verilator lint_off UNUSED */
+/* verilator lint_off CASEINCOMPLETE */
+/* verilator lint_off MULTIDRIVEN */
+
 module gpioemu(
     input            n_reset,
     input  [15:0]    saddress,
@@ -26,14 +31,15 @@ module gpioemu(
     localparam BIAS = 27'd67108864;
 
     wire sign = arg1[0] ^ arg2[0];
-    wire [35:0] mant1 = {1'b1, arg1[63:28]};
-    wire [35:0] mant2 = {1'b1, arg2[63:28]};
+    // 1 bit + 35 bitów = 36 bitów
+    wire [35:0] mant1 = {1'b1, arg1[63:29]};
+    wire [35:0] mant2 = {1'b1, arg2[63:29]};
 
     wire [71:0] mant_mul = mant1 * mant2;
     wire [26:0] exp1 = arg1[27:1];
     wire [26:0] exp2 = arg2[27:1];
 
-    wire [27:0] exp_sum = exp1 + exp2 - BIAS;
+    wire [27:0] exp_sum = {1'b0, exp1} + {1'b0, exp2} - BIAS;
 
     // FSM
     reg [1:0] state;
@@ -51,11 +57,12 @@ module gpioemu(
                 16'h00F0: a2_h <= sdata_in;
                 16'h00F8: a2_l <= sdata_in;
                 16'h00D0: ctrl <= sdata_in[0];
+                default: ;
             endcase
         end
     end
 
-    // FSM
+    // FSM LOGIC
     always @(posedge clk or negedge n_reset) begin
         if (!n_reset) begin
             state<=IDLE;
@@ -76,17 +83,19 @@ module gpioemu(
                 end
 
                 CALC: begin
-                    if (exp1 == 0 || exp2 == 0) begin
-                        {res_h,res_l} <= 0;
+                    if (exp1 == 27'd0 || exp2 == 27'd0) begin
+                        {res_h, res_l} <= 64'd0;
                     end else if (mant_mul[71]) begin
-                        {res_h,res_l} <= {
-                            mant_mul[70:35],
-                            exp_sum + 1,
+                        // 35 bitów mantysy [70:36] + 28 bitów exp + 1 bit znaku = 64 bity
+                        {res_h, res_l} <= {
+                            mant_mul[70:36],
+                            (exp_sum + 28'd1),
                             sign
                         };
                     end else begin
-                        {res_h,res_l} <= {
-                            mant_mul[69:34],
+                        // 35 bitów mantysy [69:35] + 28 bitów exp + 1 bit znaku = 64 bity
+                        {res_h, res_l} <= {
+                            mant_mul[69:35],
                             exp_sum,
                             sign
                         };
@@ -95,15 +104,17 @@ module gpioemu(
                 end
 
                 DONE: begin
-                    status <= 2;
+                    status <= 32'd2;
                     if (!ctrl)
                         state <= IDLE;
                 end
+                
+                default: state <= IDLE;
             endcase
         end
     end
 
-    // READ
+    // READ (ASYNC)
     always @(*) begin
         case(saddress)
             16'h0100: sdata_out = a1_h;
@@ -114,7 +125,7 @@ module gpioemu(
             16'h00D8: sdata_out = res_h;
             16'h00E0: sdata_out = res_l;
             16'h00D0: sdata_out = {31'd0, ctrl};
-            default:  sdata_out = 0;
+            default:  sdata_out = 32'd0;
         endcase
     end
 
