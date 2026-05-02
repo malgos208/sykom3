@@ -84,7 +84,9 @@ static int parse_fp(const char *buf, u64 *out)
     while (value >= (1ULL << 37)) { value >>= 1; binary_exp++; }
     while (value <  (1ULL << 36)) { value <<= 1; binary_exp--; }
 
-    fin_exp = binary_exp + (int)BIAS;
+    // fin_exp = binary_exp + (int)BIAS;
+    fin_exp = binary_exp + 36 + (int)BIAS;
+    
     if (fin_exp < 0 || fin_exp > 0x7FFFFFF) return -ERANGE;
 
     mantissa = value - (1ULL << 36);
@@ -171,8 +173,7 @@ static ssize_t result_read(struct file *f, char __user *ubuf, size_t cnt, loff_t
     if (*off) return 0;
     if (ioread32(io_status) != 2) return -EAGAIN;
     v   = ((u64)ioread32(res_h) << 32) | (u64)ioread32(res_l);
-    pr_info("FP64 mul: res_h=0x%08X res_l=0x%08X raw=0x%016llX\n",
-            ioread32(res_h), ioread32(res_l), v);
+    pr_info("FP64 mul: res_h=0x%08X res_l=0x%08X raw=0x%016llX\n", ioread32(res_h), ioread32(res_l), v); // debug
     len = format_fp(v, buf, sizeof(buf));
     if (len < 0 || (size_t)len > cnt) return -EINVAL;
     if (copy_to_user(ubuf, buf, len)) return -EFAULT;
