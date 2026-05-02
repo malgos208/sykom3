@@ -12,12 +12,17 @@ MODULE_AUTHOR("Malgorzata Dominika Stypa");
 MODULE_DESCRIPTION("Simple kernel module for SYKOM project - FP64 multiplier");
 MODULE_VERSION("beta");
 
-/* Format: bit[0]=znak, bits[27:1]=wykładnik(27b, BIAS=2^26), bits[63:28]=mantysa(36b) */
+// Format: bit[0]=znak, bits[27:1]=wykładnik(27b, BIAS=2^26), bits[63:28]=mantysa(36b)
 #define SYKT_GPIO_BASE_ADDR (0x00100000)
 #define SYKT_GPIO_SIZE      (0x8000)
 #define SYKT_EXIT           (0x3333)
 #define SYKT_EXIT_CODE      (0x7F)
 #define BIAS                67108864ULL   // 2^26
+
+// dla funkcji format_fp
+#define TMP_SIZE 32
+#define FRAC_DIGITS 8
+#define OUT_SIZE (FRAC_DIGITS + 3)  // 1 (cyfra) + 1 (kropka) + 8 (ułamkowe) + 1 (terminator) = 11
 
 static void __iomem *base;
 static void __iomem *arg1_h, *arg1_l, *arg2_h, *arg2_l;
@@ -36,12 +41,13 @@ static int parse_fp(const char *buf, u64 *out)
     if (*p == '-') { sign = 1; p++; } else if (*p == '+') p++;
 
     while (isdigit(*p)) {
-        if (int_part > U64_MAX / 10) return -ERANGE;
+        if (int_part > (U64_MAX / 10)) return -ERANGE;
         int_part = int_part * 10 + (*p++ - '0');
     }
     if (*p == '.') {
         p++;
-        while (isdigit(*p) && frac_digits < 9) {
+        while (isdigit(*p) && frac_digits < 20) { // ograniczenie do 20 cyfr ułamkowych dla bezpieczeństwa
+            if (frac_part > (U64_MAX / 10)) break; // zabezpieczenie przed przepełnieniem
             frac_part = frac_part * 10 + (*p++ - '0');
             frac_digits++;
         }
@@ -63,30 +69,37 @@ static int parse_fp(const char *buf, u64 *out)
 
     value = int_part;
     for (i = 0; i < frac_digits; i++) {
-        if (value > U64_MAX / 10) return -ERANGE;
+        if (value > (U64_MAX / 10)) return -ERANGE;
         value *= 10;
     }
     value += frac_part;
+    if (value < int_part) return -ERANGE;   // przepełnienie przy dodawaniu
+
     exp10 = exp_e - frac_digits;
 
     while (value < (1ULL << 60)) { value <<= 1; binary_exp--; }
     while (value >= (1ULL << 61)) { value >>= 1; binary_exp++; }
 
     while (exp10 > 0) {
-        // Sprawdź, czy mnożenie przez 10 nie przekroczy zakresu u64
-        if (value > (U64_MAX / 10)) {
+        // Jeśli nie mieści się po pomnożeniu, przesuń w prawo
+        while (value > (U64_MAX / 10)) {
             value >>= 1;
             binary_exp++;
-            // Nie zmniejszamy exp10, bo jeszcze nie pomnożyliśmy przez 10
-        } else {
-            value *= 10;
-            // Po mnożeniu normalizujemy do zakresu [2^60, 2^61]
-            while (value >= (1ULL << 61)) { value >>= 1; binary_exp++; }
-            exp10--;
         }
+        value *= 10;
+        // Po mnożeniu znormalizuj do zakresu [2^60, 2^61)
+        while (value >= (1ULL << 61)) {
+            value >>= 1;
+            binary_exp++;
+        }
+        exp10--;
     }
+
     while (exp10 < 0) {
-        if (value == 0) break;
+        if (value == 0) { // underflow -> zero
+            *out = 0;
+            return 0;
+        }
         while (value < (1ULL << 60)) {
             value <<= 1;
             binary_exp--;
@@ -108,47 +121,54 @@ static int parse_fp(const char *buf, u64 *out)
     return 0;
 }
 
+// X.XXXXXXXXe±D\n
 static int format_fp(u64 val, char *buf, size_t size)
 {
     int sign, bin_exp, dec_exp = 0, sci_exp, len, i;
     u64 mant, dec;
-    char tmp[22], out[10];
+    char tmp[TMP_SIZE], out[OUT_SIZE];
 
-    if (!val) return snprintf(buf, size, "0.0e0\n");
+    // obsługa zera (w tym ujemne zero M=0, E=0, S=1)
+    if (val == 0 || val == 1) { // val == 1 to tylko bit znaku
+        return snprintf(buf, size, "0.0e0\n");
+    }
 
-    sign    = (int)(val & 1);
-    mant    = (1ULL << 36) | ((val >> 28) & ((1ULL << 36) - 1)); // Mantysa ma 36 bitów + 1 bit ukryty
+    sign = (int)(val & 1);
+    mant = (1ULL << 36) | ((val >> 28) & ((1ULL << 36) - 1)); // Mantysa ma 36 bitów + 1 bit ukryty
     // Wykładnik binarny skorygowany o wagę mantysy i BIAS
     bin_exp = (int)((val >> 1) & 0x7FFFFFFU) - (int)BIAS - 36;
-    dec     = mant;
+    dec = mant;
 
     // Obsługa wykładników dodatnich (mnożenie przez 2)
     while (bin_exp > 0) {
-        if (dec > U64_MAX >> 1) { do_div(dec, 10); dec_exp++; }
+        if (dec > (U64_MAX >> 1)) {
+            do_div(dec, 10);
+            dec_exp++;
+        }
         dec <<= 1; bin_exp--;
     }
 
     // Obsługa wykładników ujemnych (mnożenie przez 10, potem dzielenie przez 2)
     while (bin_exp < 0) {
-        if (dec <= U64_MAX / 10) {
+        if (dec <= (U64_MAX / 10)) {
             // Mnożymy przez 10, aby przesunąć przecinek w prawo
             dec *= 10;
             dec_exp--;
         } else {
-            // Jeśli liczba jest za duża na mnożenie, 
-            // dopiero wtedy redukujemy wykładnik binarny
+            // Jeśli liczba jest za duża na mnożenie, dopiero wtedy redukujemy wykładnik binarny
             dec >>= 1;
             bin_exp++;
         }
     }
 
-    len = snprintf(tmp, sizeof(tmp), "%llu", dec);
+    len = snprintf(tmp, TMP_SIZE, "%llu", dec);
     if (len <= 0) return -EINVAL;
     sci_exp = (len - 1) + dec_exp;
 
     out[0] = tmp[0]; out[1] = '.';
-    for (i = 2; i < 8; i++) out[i] = (i - 1 < len) ? tmp[i - 1] : '0';
-    out[8] = '\0';
+    for (i = 2; i < OUT_SIZE - 1; i++)
+        out[i] = (i - 1 < len) ? tmp[i - 1] : '0';
+    out[OUT_SIZE - 1] = '\0';
 
     return snprintf(buf, size, "%s%se%d\n", sign ? "-" : "", out, sci_exp);
 }
@@ -212,11 +232,11 @@ static ssize_t result_read(struct file *f, char __user *ubuf, size_t cnt, loff_t
     *off = len; return len;
 }
 
-static const struct file_operations a1_fops   = { .write = a1_write   };
-static const struct file_operations a2_fops   = { .write = a2_write   };
+static const struct file_operations a1_fops = { .write = a1_write };
+static const struct file_operations a2_fops = { .write = a2_write };
 static const struct file_operations ctrl_fops = { .write = ctrl_write };
 static const struct file_operations stat_fops = { .read  = status_read };
-static const struct file_operations res_fops  = { .read  = result_read };
+static const struct file_operations res_fops = { .read  = result_read };
 
 int my_init_module(void)
 {
@@ -225,10 +245,10 @@ int my_init_module(void)
     base = ioremap(SYKT_GPIO_BASE_ADDR, SYKT_GPIO_SIZE);
     if (!base) return -ENOMEM;
 
-    arg1_h    = base + 0x100; arg1_l    = base + 0x108;
-    arg2_h    = base + 0x0F0; arg2_l    = base + 0x0F8;
-    io_ctrl   = base + 0x0D0; io_status = base + 0x0E8;
-    res_h     = base + 0x0D8; res_l     = base + 0x0E0;
+    arg1_h = base + 0x100; arg1_l = base + 0x108;
+    arg2_h = base + 0x0F0; arg2_l = base + 0x0F8;
+    io_ctrl = base + 0x0D0; io_status = base + 0x0E8;
+    res_h = base + 0x0D8; res_l = base + 0x0E0;
 
     proc_dir = proc_mkdir("sykom", NULL);
     if (!proc_dir) goto fail;
@@ -250,9 +270,10 @@ int my_init_module(void)
     }
     printk(KERN_INFO "FP64 multiplier: ready\n");
     return 0;
-fail:
-    iounmap(base);
-    return -ENOMEM;
+
+    fail:
+        iounmap(base);
+        return -ENOMEM;
 }
 
 void my_cleanup_module(void)
