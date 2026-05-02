@@ -10,22 +10,12 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Student SYKOM");
 MODULE_DESCRIPTION("FP64 multiplier (PROCFS)");
 
-/*
- * Format 64-bitowy (zgodnie ze specyfikacją):
- *   bit  [0]       – znak
- *   bits [27:1]    – wykładnik (FP_EXP_BITS bitów, obciążenie BIAS = 2^26)
- *   bits [63:28]   – mantysa bez wiodącej jedynki (FP_MANT_BITS bitów)
- */
-#define FP_MANT_BITS  36
-#define FP_EXP_BITS   27
-#define FP_BIAS       67108864ULL          /* 2^26 */
-#define FP_EXP_MAX    ((1U << FP_EXP_BITS) - 1)   /* 0x7FFFFFF */
-
-/* Rejestr stanu gpioemu.v: 0=idle, 1=busy, 2=done */
-#define STATUS_DONE   2U
-
-#define BASE_ADDR 0x00100000UL
-#define BASE_SIZE 0x8000U
+/* Format: bit[0]=znak, bits[27:1]=wykładnik(27b, BIAS=2^26), bits[63:28]=mantysa(36b) */
+#define SYKT_GPIO_BASE_ADDR (0x00100000)
+#define SYKT_GPIO_SIZE      (0x8000)
+#define SYKT_EXIT           (0x3333)
+#define SYKT_EXIT_CODE      (0x7F)
+#define BIAS                67108864ULL   // 2^26
 
 static void __iomem *base;
 static void __iomem *arg1_h, *arg1_l, *arg2_h, *arg2_l;
@@ -34,8 +24,6 @@ static void __iomem *io_ctrl, *io_status, *res_h, *res_l;
 static struct proc_dir_entry *proc_dir;
 static struct proc_dir_entry *pe_a1, *pe_a2, *pe_ctrl, *pe_stat, *pe_res;
 
-/* Parsuje notację naukową (np. "-3.14e2") → 64-bitowy format sprzętowy.
- * Zwraca 0 przy sukcesie lub ujemny kod błędu. */
 static int parse_fp(const char *buf, u64 *out)
 {
     int sign = 0, frac_digits = 0, exp_e = 0, e_sign = 1, i, fin_exp;
@@ -55,14 +43,14 @@ static int parse_fp(const char *buf, u64 *out)
             frac_part = frac_part * 10 + (*p++ - '0');
             frac_digits++;
         }
-        while (isdigit(*p)) p++;   /* pomijamy nadmiarowe cyfry po przecinku */
+        while (isdigit(*p)) p++;
     }
     if (*p == 'e' || *p == 'E') {
         p++;
         if (*p == '-') { e_sign = -1; p++; } else if (*p == '+') p++;
         while (isdigit(*p)) {
             exp_e = exp_e * 10 + (*p++ - '0');
-            if (exp_e > 400) return -ERANGE;  /* poza zasięgiem formatu */
+            if (exp_e > 400) return -ERANGE;
         }
         exp_e *= e_sign;
     }
@@ -71,21 +59,17 @@ static int parse_fp(const char *buf, u64 *out)
 
     if (!int_part && !frac_part) { *out = 0; return 0; }
 
-    /* Łączymy: value = int_part * 10^frac_digits + frac_part */
     value = int_part;
     for (i = 0; i < frac_digits; i++) {
         if (value > U64_MAX / 10) return -ERANGE;
         value *= 10;
     }
     value += frac_part;
-    exp10 = exp_e - frac_digits;  /* łączny wykładnik dziesiętny */
+    exp10 = exp_e - frac_digits;
 
-    /* Normalizacja wstępna do [2^60, 2^61) – zapas precyzji binarnej */
     while (value < (1ULL << 60)) { value <<= 1; binary_exp--; }
     while (value >= (1ULL << 61)) { value >>= 1; binary_exp++; }
 
-    /* Stosujemy wykładnik dziesiętny, utrzymując zakres [2^60, 2^61).
-     * do_div(v, 10) – makro z linux/math64.h; efektywne na 32-bit RISC-V. */
     while (exp10 > 0) {
         value *= 10;
         while (value >= (1ULL << 61)) { value >>= 1; binary_exp++; }
@@ -97,15 +81,14 @@ static int parse_fp(const char *buf, u64 *out)
         exp10++;
     }
 
-    /* Normalizacja końcowa do [2^FP_MANT_BITS, 2^(FP_MANT_BITS+1)) */
-    while (value >= (1ULL << (FP_MANT_BITS + 1))) { value >>= 1; binary_exp++; }
-    while (value <  (1ULL << FP_MANT_BITS))        { value <<= 1; binary_exp--; }
+    while (value >= (1ULL << 37)) { value >>= 1; binary_exp++; }
+    while (value <  (1ULL << 36)) { value <<= 1; binary_exp--; }
 
-    fin_exp = binary_exp + (int)FP_BIAS;
-    if (fin_exp < 0 || (u32)fin_exp > FP_EXP_MAX) return -ERANGE;
+    fin_exp = binary_exp + (int)BIAS;
+    if (fin_exp < 0 || fin_exp > 0x7FFFFFF) return -ERANGE;
 
-    mantissa = value - (1ULL << FP_MANT_BITS);  /* usuwamy wiodącą jedynkę */
-    *out = (mantissa << (FP_EXP_BITS + 1)) | ((u64)(u32)fin_exp << 1) | (u64)sign;
+    mantissa = value - (1ULL << 36);
+    *out = (mantissa << 28) | ((u64)(u32)fin_exp << 1) | (u64)sign;
     return 0;
 }
 
@@ -204,7 +187,7 @@ static const struct file_operations res_fops  = { .read  = result_read };
 
 static int __init fp_mul_init(void)
 {
-    base = ioremap(BASE_ADDR, BASE_SIZE);
+    base = ioremap(SYKT_GPIO_BASE_ADDR, SYKT_GPIO_SIZE);
     if (!base) return -ENOMEM;
 
     arg1_h    = base + 0x100; arg1_l    = base + 0x108;
@@ -239,7 +222,7 @@ fail:
 
 static void __exit fp_mul_exit(void)
 {
-    iowrite32(0x3333 | (0x7F << 16), base);
+    iowrite32(SYKT_EXIT | (SYKT_EXIT_CODE << 16), base);
     proc_remove(pe_a1);   proc_remove(pe_a2);
     proc_remove(pe_ctrl); proc_remove(pe_stat); proc_remove(pe_res);
     proc_remove(proc_dir);
