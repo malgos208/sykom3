@@ -182,9 +182,16 @@ static ssize_t status_read(struct file *f, char __user *ubuf, size_t cnt, loff_t
     u32 st; const char *msg; size_t len;
     if (*off) return 0;
     st  = ioread32(io_status);
-    msg = (st == 0) ? "idle\n" : (st == 1) ? "busy\n" : "done\n";
+    switch (st) {
+        case 0:  msg = "idle\n"; break;
+        case 1:  msg = "busy\n"; break;
+        case 2:  msg = "done\n"; break;
+        default: msg = "unknown/error\n"; break; // Obsługa wartości nieoczekiwanych[cite: 1, 4]
+    }
+
     len = strlen(msg);
-    if (cnt < len || copy_to_user(ubuf, msg, len)) return -EFAULT;
+    if (cnt < len) return -EINVAL; // nieprawidłowy argument
+    if (copy_to_user(ubuf, msg, len)) return -EFAULT; // błąd dostępu do pamięci
     *off = len; return len;
 }
 

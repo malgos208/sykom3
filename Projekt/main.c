@@ -62,11 +62,7 @@ static int wait_done(void)
 
 
 /* Test z błędem procentowym                                 */
-static int run_test(const char *label,
-                    const char *a1,
-                    const char *a2,
-                    double reference)
-{
+static int run_test(const char *label, const char *a1, const char *a2, double reference) {
     char res_buf[64];
     double measured;
     double err_percent;
@@ -75,14 +71,20 @@ static int run_test(const char *label,
     printf("  a1 = %-15s a2 = %-15s\n", a1, a2);
 
     // Reset protokołu przed operacją
-    ack_operation();
+    if (ack_operation()) return -1;
+    usleep(1000); // 1ms na ustabilizowanie stanu IDLE
 
+    // Wpisanie danych
     if (write_str(A1, a1)) return -1;
     if (write_str(A2, a2)) return -1;
 
+    // Bit startu (ctrl_reg[0] = 1).
     if (start_operation()) return -1;
-    if (wait_done()) return -1;
-
+    
+    if (wait_done()) {
+            fprintf(stderr, "  BŁĄD: Hardware nie zgłosił 'done' dla testu: %s\n", label);
+            return -1;
+    }
     if (read_str(RES, res_buf, sizeof(res_buf))) return -1;
 
     // Parsowanie wyniku z modułu
