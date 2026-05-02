@@ -109,18 +109,21 @@ static int format_fp(u64 val, char *buf, size_t size)
     bin_exp = (int)((val >> 1) & 0x7FFFFFFU) - (int)BIAS - 36;
     dec     = mant;
 
-    while (dec < (1ULL << 60)) {
-        dec <<= 1;
-        bin_exp--;
-    }
-
     while (bin_exp > 0) {
         if (dec > U64_MAX >> 1) { do_div(dec, 10); dec_exp++; }
         dec <<= 1; bin_exp--;
     }
     while (bin_exp < 0) {
-        if (dec > U64_MAX / 5) { do_div(dec, 10); dec_exp++; }
-        dec *= 5; do_div(dec, 10); bin_exp++;
+        if (dec <= U64_MAX / 10) {
+            // Mnożymy przez 10, aby przesunąć przecinek w prawo
+            dec *= 10;
+            dec_exp--;
+        } else {
+            // Jeśli liczba jest za duża na mnożenie, 
+            // dopiero wtedy redukujemy wykładnik binarny
+            dec >>= 1;
+            bin_exp++;
+        }
     }
 
     len     = snprintf(tmp, sizeof(tmp), "%llu", dec);
