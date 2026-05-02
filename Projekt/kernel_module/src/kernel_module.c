@@ -86,17 +86,13 @@ static int parse_fp(const char *buf, u64 *out)
         }
     }
     while (exp10 < 0) {
-        // Zamiast dzielić mantysę przez 10 (co ją zeruje),
-        // zwiększamy wykładnik binarny, dopóki możemy bezpiecznie pomnożyć przez 10
-        if (value > (U64_MAX / 10)) {
-            value >>= 1;
-            binary_exp++;
-        } else {
-            // Dzielenie przez 10 realizujemy przez mnożenie przez 10 i korektę wykładnika
-            // ale w parse_fp lepiej dążyć do normalizacji bitowej
-            value = div_u64(value, 10); 
-            exp10++;
+        if (value == 0) break;
+        while (value < (1ULL << 60)) {
+            value <<= 1;
+            binary_exp--;
         }
+        do_div(value, 10);
+        exp10++;
     }
 
     while (value >= (1ULL << 37)) { value >>= 1; binary_exp++; }
