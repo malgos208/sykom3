@@ -109,6 +109,11 @@ static int format_fp(u64 val, char *buf, size_t size)
     bin_exp = (int)((val >> 1) & 0x7FFFFFFU) - (int)BIAS - 36;
     dec     = mant;
 
+    while (dec < (1ULL << 60)) {
+        dec <<= 1;
+        bin_exp--;
+    }
+
     while (bin_exp > 0) {
         if (dec > U64_MAX >> 1) { do_div(dec, 10); dec_exp++; }
         dec <<= 1; bin_exp--;
