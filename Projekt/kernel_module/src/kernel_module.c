@@ -73,9 +73,17 @@ static int parse_fp(const char *buf, u64 *out)
     while (value >= (1ULL << 61)) { value >>= 1; binary_exp++; }
 
     while (exp10 > 0) {
-        value *= 10;
-        while (value >= (1ULL << 61)) { value >>= 1; binary_exp++; }
-        exp10--;
+        // Sprawdź, czy mnożenie przez 10 nie przekroczy zakresu u64
+        if (value > (U64_MAX / 10)) {
+            value >>= 1;
+            binary_exp++;
+            // Nie zmniejszamy exp10, bo jeszcze nie pomnożyliśmy przez 10
+        } else {
+            value *= 10;
+            // Po mnożeniu normalizujemy do zakresu [2^60, 2^61]
+            while (value >= (1ULL << 61)) { value >>= 1; binary_exp++; }
+            exp10--;
+        }
     }
     while (exp10 < 0) {
         while (value < (1ULL << 60)) { value <<= 1; binary_exp--; }
@@ -105,14 +113,18 @@ static int format_fp(u64 val, char *buf, size_t size)
     if (!val) return snprintf(buf, size, "0.0e0\n");
 
     sign    = (int)(val & 1);
-    mant    = (1ULL << 36) | ((val >> 28) & ((1ULL << 36) - 1));
+    mant    = (1ULL << 36) | ((val >> 28) & ((1ULL << 36) - 1)); // Mantysa ma 36 bitów + 1 bit ukryty
+    // Wykładnik binarny skorygowany o wagę mantysy i BIAS
     bin_exp = (int)((val >> 1) & 0x7FFFFFFU) - (int)BIAS - 36;
     dec     = mant;
 
+    // Obsługa wykładników dodatnich (mnożenie przez 2)
     while (bin_exp > 0) {
         if (dec > U64_MAX >> 1) { do_div(dec, 10); dec_exp++; }
         dec <<= 1; bin_exp--;
     }
+
+    // Obsługa wykładników ujemnych (mnożenie przez 10, potem dzielenie przez 2)
     while (bin_exp < 0) {
         if (dec <= U64_MAX / 10) {
             // Mnożymy przez 10, aby przesunąć przecinek w prawo
@@ -126,7 +138,7 @@ static int format_fp(u64 val, char *buf, size_t size)
         }
     }
 
-    len     = snprintf(tmp, sizeof(tmp), "%llu", dec);
+    len = snprintf(tmp, sizeof(tmp), "%llu", dec);
     if (len <= 0) return -EINVAL;
     sci_exp = (len - 1) + dec_exp;
 
@@ -137,8 +149,7 @@ static int format_fp(u64 val, char *buf, size_t size)
     return snprintf(buf, size, "%s%se%d\n", sign ? "-" : "", out, sci_exp);
 }
 
-static ssize_t arg_write(const char __user *ubuf, size_t cnt, loff_t *off,
-                         void __iomem *hi, void __iomem *lo)
+static ssize_t arg_write(const char __user *ubuf, size_t cnt, loff_t *off, void __iomem *hi, void __iomem *lo)
 {
     char buf[64]; u64 val;
     if (cnt >= sizeof(buf)) return -ENOSPC;
