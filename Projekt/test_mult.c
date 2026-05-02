@@ -153,4 +153,3 @@ int main(void)
     printf("Koniec testow\n");
     return 0;
 }
-``
