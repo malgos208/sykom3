@@ -6,9 +6,11 @@
 #include <asm/io.h>
 #include <linux/math64.h>
 
+MODULE_INFO(intree, "Y");
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Student SYKOM");
-MODULE_DESCRIPTION("FP64 multiplier (PROCFS)");
+MODULE_AUTHOR("Malgorzata Dominika Stypa");
+MODULE_DESCRIPTION("Simple kernel module for SYKOM project - FP64 multiplier");
+MODULE_VERSION("beta");
 
 /* Format: bit[0]=znak, bits[27:1]=wykładnik(27b, BIAS=2^26), bits[63:28]=mantysa(36b) */
 #define SYKT_GPIO_BASE_ADDR (0x00100000)
@@ -86,7 +88,7 @@ static int parse_fp(const char *buf, u64 *out)
 
     // fin_exp = binary_exp + (int)BIAS;
     fin_exp = binary_exp + 36 + (int)BIAS;
-    
+
     if (fin_exp < 0 || fin_exp > 0x7FFFFFF) return -ERANGE;
 
     mantissa = value - (1ULL << 36);
@@ -173,7 +175,7 @@ static ssize_t result_read(struct file *f, char __user *ubuf, size_t cnt, loff_t
     if (*off) return 0;
     if (ioread32(io_status) != 2) return -EAGAIN;
     v   = ((u64)ioread32(res_h) << 32) | (u64)ioread32(res_l);
-    pr_info("FP64 mul: res_h=0x%08X res_l=0x%08X raw=0x%016llX\n", ioread32(res_h), ioread32(res_l), v); // debug
+    printk(KERN_INFO "FP64 mul: res_h=0x%08X res_l=0x%08X raw=0x%016llX\n", ioread32(res_h), ioread32(res_l), v); // debug
     len = format_fp(v, buf, sizeof(buf));
     if (len < 0 || (size_t)len > cnt) return -EINVAL;
     if (copy_to_user(ubuf, buf, len)) return -EFAULT;
@@ -186,8 +188,10 @@ static const struct file_operations ctrl_fops = { .write = ctrl_write };
 static const struct file_operations stat_fops = { .read  = status_read };
 static const struct file_operations res_fops  = { .read  = result_read };
 
-static int __init fp_mul_init(void)
+int my_init_module(void)
 {
+    printk(KERN_INFO "Init my module.\n");
+
     base = ioremap(SYKT_GPIO_BASE_ADDR, SYKT_GPIO_SIZE);
     if (!base) return -ENOMEM;
 
@@ -214,15 +218,18 @@ static int __init fp_mul_init(void)
         proc_remove(proc_dir);
         goto fail;
     }
-    pr_info("FP64 mul: ready\n");
+    printk(KERN_INFO "FP64 multiplier: ready\n");
     return 0;
 fail:
     iounmap(base);
     return -ENOMEM;
 }
 
-static void __exit fp_mul_exit(void)
+void my_cleanup_module(void)
 {
+    printk(KERN_INFO "Cleanup my module.\n");
+
+    // Wpisanie kodu wyjscia do rejestru sterującego emulatora
     iowrite32(SYKT_EXIT | (SYKT_EXIT_CODE << 16), base);
     proc_remove(pe_a1);   proc_remove(pe_a2);
     proc_remove(pe_ctrl); proc_remove(pe_stat); proc_remove(pe_res);
@@ -230,5 +237,5 @@ static void __exit fp_mul_exit(void)
     iounmap(base);
 }
 
-module_init(fp_mul_init);
-module_exit(fp_mul_exit);
+module_init(my_init_module);
+module_exit(my_cleanup_module);
