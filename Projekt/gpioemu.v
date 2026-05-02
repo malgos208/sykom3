@@ -119,7 +119,6 @@ module gpioemu(
                     end else begin
                         prod_reg <= {1'b1, mant1} * {1'b1, mant2};
                         exp_reg  <= $signed({1'b0, exp1}) + $signed({1'b0, exp2}) - $signed({1'b0, BIAS});
-;
                         sign_reg <= sign1 ^ sign2;
                     end
                     state <= S_WRITE;

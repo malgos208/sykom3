@@ -15,7 +15,7 @@ MODULE_DESCRIPTION("FP64 multiplier (PROCFS)");
 #define SYKT_GPIO_SIZE      (0x8000)
 #define SYKT_EXIT           (0x3333)
 #define SYKT_EXIT_CODE      (0x7F)
-#define BIAS        67108864ULL   // 2^26
+#define BIAS                67108864ULL   // 2^26
 
 static void __iomem *base;
 static void __iomem *arg1_h, *arg1_l, *arg2_h, *arg2_l;
@@ -220,7 +220,7 @@ fail:
 
 static void __exit fp_mul_exit(void)
 {
-    iowrite32(0x3333 | (0x7F << 16), base);
+    iowrite32(SYKT_EXIT | (SYKT_EXIT_CODE << 16), base);
     proc_remove(pe_a1);   proc_remove(pe_a2);
     proc_remove(pe_ctrl); proc_remove(pe_stat); proc_remove(pe_res);
     proc_remove(proc_dir);
