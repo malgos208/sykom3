@@ -18,6 +18,7 @@ static int write_str(const char *path, const char *s)
     FILE *f = fopen(path, "w");
     if (!f) { perror(path); return -1; }
     fputs(s, f);
+    fputc('\n', f);
     fclose(f);
     return 0;
 }
@@ -65,7 +66,7 @@ static int run_test(const char *label, const char *a1, const char *a2)
     if (write_str(A2, a2)) return -1;
 
     // 2. Sygnał startu obliczeń (ctrl_reg[0] = 1)
-    if (write_str(CTL, "1\n")) return -1;
+    if (write_str(CTL, "1")) return -1;
 
     // 3. Oczekiwanie na status 'done'
     int ret = wait_done();
@@ -82,7 +83,7 @@ static int run_test(const char *label, const char *a1, const char *a2)
     if (read_str(RES, res_buf, sizeof(res_buf))) return -1;
 
     // 5. Sygnał powrotu do IDLE (ctrl_reg[0] = 0)
-    if (write_str(CTL, "0\n")) return -1;
+    if (write_str(CTL, "0")) return -1;
 
     // 6. Weryfikacja wyniku (porówanie wynikowego stringu z oczekiwanym)
     double calculated = strtod(res_buf, NULL);
@@ -122,17 +123,17 @@ static int run_invalid_test(const char *label, const char *path, const char *val
 {
     printf("\n[%s] zapis '%s' do %s\n", label, val, path);
 
-    write_str(path, val);                    // próba zapisu błędnych danych
+    write_str(path, val); // próba zapisu błędnych danych
 
     // Sprawdź, czy moduł nadal działa (1.0 * 1.0 = 1.0)
-    write_str(A1, "1.0e0\n");
-    write_str(A2, "1.0e0\n");
-    write_str(CTL, "1\n");
+    write_str(A1, "1.0e0");
+    write_str(A2, "1.0e0");
+    write_str(CTL, "1");
     wait_done();
 
     char res[64];
     read_str(RES, res, sizeof(res));
-    write_str(CTL, "0\n");
+    write_str(CTL, "0");
 
     printf("\tStatus: %s (wynik=%s)", strstr(res, "1.000000000e0") ? "PASS" : "FAIL", res);
     return 0;
@@ -144,7 +145,7 @@ static int run_early_read_test(void)
     printf("\n[T_ERR_EARLY: Odczyt wyniku przed obliczeniami]\n");
 
     // Upewnij się, że moduł jest w IDLE
-    write_str(CTL, "0\n");
+    write_str(CTL, "0");
     usleep(5000);
 
     errno = 0;
@@ -174,7 +175,7 @@ static int run_early_read_test(void)
 int main(void)
 {
     printf("Tester mnożenia FP64\n");
-    write_str(CTL, "0\n");
+    write_str(CTL, "0"); // reset modułu przed testami
     usleep(5000);
 
     // === Podstawowe mnożenie ===
@@ -236,22 +237,22 @@ int main(void)
     run_test("T34: -1e-300 * 0 = 0", "-1.0e-300", "0.0e0");
 
     // === Testy błędnych danych ===
-    printf("\n--- Testy błędnych danych ---\n");
+    printf("\nTesty błędnych danych\n");
 
-    write_str(CTL, "0\n");
+    write_str(CTL, "0");
     usleep(5000);
 
     run_early_read_test();
 
-    run_invalid_test("T_ERR1: tekst zamiast liczby", A1, "abc\n");
-    run_invalid_test("T_ERR2: pusty string", A1, "\n");
-    run_invalid_test("T_ERR3: przepełniony wykładnik", A1, "1.0e999\n");
-    run_invalid_test("T_ERR4: podwójny znak", A1, "++1.0e0\n");
-    run_invalid_test("T_ERR5: dwie kropki", A1, "1.2.3\n");
-    run_invalid_test("T_ERR6: ctrl = 2", CTL, "2\n");
-    run_invalid_test("T_ERR7: ctrl = tekst", CTL, "start\n");
+    run_invalid_test("T_ERR1: tekst zamiast liczby", A1, "abc");
+    run_invalid_test("T_ERR2: pusty string", A1, "");
+    run_invalid_test("T_ERR3: przepełniony wykładnik", A1, "1.0e999");
+    run_invalid_test("T_ERR4: podwójny znak", A1, "++1.0e0");
+    run_invalid_test("T_ERR5: dwie kropki", A1, "1.2.3");
+    run_invalid_test("T_ERR6: ctrl = 2", CTL, "2");
+    run_invalid_test("T_ERR7: ctrl = tekst", CTL, "start");
 
-    write_str(CTL, "0\n");
+    write_str(CTL, "0");
 
     printf("\nTesty zakończone.\n");
     return 0;
