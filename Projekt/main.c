@@ -174,100 +174,85 @@ static int run_early_read_test(void)
 int main(void)
 {
     printf("Tester mnożenia FP64\n");
+    write_str(CTL, "0\n");
+    usleep(5000);
 
-    run_test("T1: Mnożenie całkowite", "2.0e0", "5.0e0");
-    run_test("T2: Ułamki (potęgi 2)", "1.75e0", "1.75e0");
-    run_test("T3: Znaki mieszane", "-2.5e0", "4.0e0");
-    run_test("T4: Małe wartości", "1.0e-20", "2.0e-20");
-    run_test("T5: Duże wartości", "1.2345e10", "1.0e10");
-    run_test("T6: Mnożenie przez zero", "0.0e0", "123.456e10");
-    run_test("T7: Precyzja mantysy", "1.111111e0", "1.111111e0");
-    // Round-trip & znak
-    run_test("T8:  Mnożenie przez 1", "3.14159265e0", "1.0e0");
-    run_test("T9:  Mnożenie przez -1", "2.71828182e0", "-1.0e0");
-    // Ujemne zero
-    run_test("T10: Ujemne zero * dodatnia", "-0.0e0", "5.0e0");
-    run_test("T11: Dodatnia * ujemne zero", "5.0e0", "-0.0e0");
-    // Zaokrąglanie i precyzja
-    run_test("T12: Zaokrąglanie w górę (9 cyfr)", "1.111111118e0", "1.0e0");
-    run_test("T13: Zaokrąglanie w dół (9 cyfr)", "1.111111112e0", "1.0e0");
-    // Ekstremalne zakresy
-    run_test("T14: Duże wartości (1e100)", "1.0e100", "1.0e100");
-    run_test("T15: Bardzo małe wartości", "1.0e-100", "1.0e-100");
-    // Mieszane znaki z małymi liczbami
-    run_test("T16: Mała wartość ujemna * zero", "-1.0e-300", "0.0e0");
-    
-    // === Testy skrajnych przypadków ===
-    // Maksymalny i minimalny wykładnik
-    run_test("T17: Maksymalny wykładnik (1e67000000 * 1.0)",
-            "1.0e67000000", "1.0e0");
-    run_test("T18: Minimalny wykładnik (1e-67000000 * 1.0)",
-            "1.0e-67000000", "1.0e0");
+    // === Podstawowe mnożenie ===
+    run_test("T01: 2.0 * 5.0 = 10.0", "2.0e0", "5.0e0");
+    run_test("T02: 1.75 * 1.75 = 3.0625", "1.75e0", "1.75e0");
+    run_test("T03: 1.23456789 * 9.87654321", "1.23456789e0", "9.87654321e0");
 
-    // Overflow – wynik poza zakresem
-    run_test("T19: Overflow (1e67000000 * 1e67000000)",
-            "1.0e67000000", "1.0e67000000");
+    // === Znaki ===
+    run_test("T04: (+) * (-) = (-)", "-2.5e0", "4.0e0");
+    run_test("T05: (-) * (-) = (+)", "-2.5e0", "-4.0e0");
+    run_test("T06: (-) * (+) = (-)", "2.5e0", "-4.0e0");
 
-    // Underflow – wynik zbyt mały
-    run_test("T20: Underflow (1e-67000000 * 1e-67000000)",
-            "1.0e-67000000", "1.0e-67000000");
+    // === Zero ===
+    run_test("T07: 0 * liczba = 0", "0.0e0", "123.456e10");
+    run_test("T08: liczba * 0 = 0", "123.456e10", "0.0e0");
+    run_test("T09: 0 * 0 = 0", "0.0e0", "0.0e0");
+    run_test("T10: -0 * 5.0 = 0", "-0.0e0", "5.0e0");
+    run_test("T11: 5.0 * -0 = 0", "5.0e0", "-0.0e0");
 
-    // Maksymalna mantysa
-    run_test("T21: Maksymalna mantysa (1.999999 * 1.0)",
-            "1.999999999e0", "1.0e0");
+    // === Mnożenie przez 1 i -1 (round-trip) ===
+    run_test("T12: liczba * 1 = liczba", "3.14159265e0", "1.0e0");
+    run_test("T13: liczba * -1 = -liczba", "2.71828182e0", "-1.0e0");
 
-    // Liczba bliska 1.0
-    run_test("T22: 1.000000001 * 1.000000001",
-            "1.000000001e0", "1.000000001e0");
+    // === Małe liczby ===
+    run_test("T14: 1e-20 * 2e-20 = 2e-40", "1.0e-20", "2.0e-20");
+    run_test("T15: 1e-100 * 1e-100 = 1e-200", "1.0e-100", "1.0e-100");
+    run_test("T16: 1e-150 * 1e-150 = 1e-300", "1.0e-150", "1.0e-150");
+    run_test("T17: 1.5e-50 * 2e-50 = 3e-100", "1.5e-50", "2.0e-50");
 
-    // Bardzo mała mantysa
-    run_test("T23: 1.000000001 * 0.999999999",
-            "1.000000001e0", "0.999999999e0");
+    // === Duże liczby ===
+    run_test("T18: 1.2345e10 * 1e10 = 1.2345e20", "1.2345e10", "1.0e10");
+    run_test("T19: 1e100 * 1e100 = 1e200", "1.0e100", "1.0e100");
+    run_test("T20: 1e150 * 1e150 = 1e300", "1.0e150", "1.0e150");
+    run_test("T21: 1.5e50 * 2e50 = 3e100", "1.5e50", "2.0e50");
 
-    // Duża liczba z dużą mantysą
-    run_test("T24: 1.999999e20 * 1.999999e20",
-            "1.999999e20", "1.999999e20");
+    // === Mieszane zakresy ===
+    run_test("T22: 1e100 * 1e-100 = 1", "1.0e100", "1.0e-100");
+    run_test("T23: 1e150 * 1e-50 = 1e100", "1.0e150", "1.0e-50");
 
-    // Mała liczba z małą mantysą
-    run_test("T25: 1.000001e-20 * 1.000001e-20",
-            "1.000001e-20", "1.000001e-20");
+    // === Precyzja mantysy ===
+    run_test("T24: 1.111111 * 1.111111", "1.111111e0", "1.111111e0");
+    run_test("T25: zaokrąglanie w górę", "1.111111118e0", "1.0e0");
+    run_test("T26: zaokrąglanie w dół", "1.111111112e0", "1.0e0");
+    run_test("T27: duża mantysa * 1", "1.999999999e0", "1.0e0");
 
-    // Zero z ujemną mantysą (ujemne zero)
-    run_test("T26: -0.0 * -0.0", "-0.0e0", "-0.0e0");
+    // === Duże/małe z mantysą ===
+    run_test("T28: 1.999999e100 * 1", "1.999999e100", "1.0e0");
+    run_test("T29: 1.999999e-100 * 1", "1.999999e-100", "1.0e0");
+    run_test("T30: 1.23456789e50 * 1", "1.23456789e50", "1.0e0");
 
-    // Przemienność z zerem
-    run_test("T27: 0 * -5.0", "0.0e0", "-5.0e0");
+    // === Potęgi dwójki (dokładne w binarnym) ===
+    run_test("T31: 1024 * 1024 = 1048576", "1.024e3", "1.024e3");
 
-    // Dokładność – potęgi 2 (bezstratne w binarnym)
-    run_test("T28: 2.0^10 * 2.0^10 = 2.0^20",
-            "1.024e3", "1.024e3");
+    // === Symetria znaków ===
+    run_test("T32: (-1) * (-1) = 1", "-1.0e0", "-1.0e0");
+    run_test("T33: (-1) * 1 = -1", "-1.0e0", "1.0e0");
 
-    // Liczby z wieloma cyframi znaczącymi
-    run_test("T29: 1.23456789e0 * 9.87654321e0",
-            "1.23456789e0", "9.87654321e0");
+    // === Bardzo mała * zero ===
+    run_test("T34: -1e-300 * 0 = 0", "-1.0e-300", "0.0e0");
 
-    // Symetria znaków
-    run_test("T30: -1.0 * -1.0 = 1.0", "-1.0e0", "-1.0e0");
-    run_test("T31: -1.0 * 1.0 = -1.0", "-1.0e0", "1.0e0");
-    run_test("T32: 1.0 * -1.0 = -1.0", "1.0e0", "-1.0e0");
-
-    // Testy błędnych danych
+    // === Testy błędnych danych ===
     printf("\n--- Testy błędnych danych ---\n");
 
-    // Przywróć IDLE
     write_str(CTL, "0\n");
     usleep(5000);
 
     run_early_read_test();
 
-    run_invalid_test("T_ERR1: Tekst zamiast liczby", A1, "abc\n");
-    run_invalid_test("T_ERR2: Pusty string", A1, "\n");
-    run_invalid_test("T_ERR3: Przepełniony wykładnik", A1, "1.0e999\n");
-    run_invalid_test("T_ERR4: Błędny znak", A1, "++1.0e0\n");
-    run_invalid_test("T_ERR5: Dwa znaki dziesiętne", A1, "1.2.3\n");
-    run_invalid_test("T_ERR6: Błędna wartość ctrl (2)", CTL, "2\n");
-    run_invalid_test("T_ERR7: Błędna wartość ctrl (tekst)", CTL, "start\n");
+    run_invalid_test("T_ERR1: tekst zamiast liczby", A1, "abc\n");
+    run_invalid_test("T_ERR2: pusty string", A1, "\n");
+    run_invalid_test("T_ERR3: przepełniony wykładnik", A1, "1.0e999\n");
+    run_invalid_test("T_ERR4: podwójny znak", A1, "++1.0e0\n");
+    run_invalid_test("T_ERR5: dwie kropki", A1, "1.2.3\n");
+    run_invalid_test("T_ERR6: ctrl = 2", CTL, "2\n");
+    run_invalid_test("T_ERR7: ctrl = tekst", CTL, "start\n");
 
-    printf("\nTesty zakoczone.\n");
+    write_str(CTL, "0\n");
+
+    printf("\nTesty zakończone.\n");
     return 0;
 }
