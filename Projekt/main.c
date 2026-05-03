@@ -135,7 +135,7 @@ static int run_invalid_test(const char *label, const char *path, const char *val
     read_str(RES, res, sizeof(res));
     write_str(CTL, "0");
 
-    printf("\tStatus: %s", strstr(res, "1.000000000e0") ? "PASS" : "FAIL"s);
+    printf("\tStatus: %s", strstr(res, "1.000000000e0") ? "PASS" : "FAIL");
     return 0;
 }
 
