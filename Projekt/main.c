@@ -50,22 +50,11 @@ static int wait_done(void)
     return -ETIMEDOUT; // przekroczono limit czasu
 }
 
-// Konwersja napisu w notacji naukowej na double
-static double parse_sci(const char *s)
-{
-    char *end;
-    double mant = strtod(s, &end);
-    int exp = 0;
-    if (*end == 'e' || *end == 'E')
-        exp = atoi(end + 1);
-    return mant * pow(10.0, exp);
-}
-
 // Test z błędem procentowym
 static int run_test(const char *label, const char *a1, const char *a2)
 {
     char res_buf[64];
-    double reference = parse_sci(a1) * parse_sci(a2);
+    double reference = strtod(a1, NULL) * strtod(a2, NULL);
 
     // Tytuł testu i wypisanie argumentów
     printf("\n[%s]\n", label);
@@ -96,7 +85,7 @@ static int run_test(const char *label, const char *a1, const char *a2)
     if (write_str(CTL, "0\n")) return -1;
 
     // 6. Weryfikacja wyniku (porówanie wynikowego stringu z oczekiwanym)
-    double calculated = parse_sci(res_buf);
+    double calculated = strtod(res_buf, NULL);
 
     printf("\tSurowy wynik: %s", res_buf); // wzięty bezpośrednio z pliku wynikowego
     printf("\tReferencyjna wartość: %-15.10g\n", reference);
