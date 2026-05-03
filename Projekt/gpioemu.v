@@ -99,8 +99,8 @@ module gpioemu(
             16'h00F0: sdata_out = arg2_h;
             16'h00F8: sdata_out = arg2_l;
             16'h00E8: sdata_out = status_reg;
-            16'h00D8: sdata_out = res_h;
-            16'h00E0: sdata_out = res_l;
+            16'h00D8: sdata_out = result_h;
+            16'h00E0: sdata_out = result_l;
             16'h00D0: sdata_out = ctrl_reg;
             default:  sdata_out = 32'd0;
         endcase
