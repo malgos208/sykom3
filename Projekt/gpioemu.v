@@ -90,7 +90,7 @@ module gpioemu(
             endcase
         end
     end
-    
+
     always @(posedge srd or negedge n_reset) begin
         if (!n_reset) begin
             sdata_out <= 32'd0;
@@ -108,26 +108,6 @@ module gpioemu(
             endcase
         end
     end
-    // always @(*) begin
-    //     if (!n_reset)
-    //         sdata_out = 32'd0; // reset magistrali wyjściowej
-    //     else if (srd) begin
-    //         case (saddress)
-    //             16'h0100: sdata_out = arg1_h;
-    //             16'h0108: sdata_out = arg1_l;
-    //             16'h00F0: sdata_out = arg2_h;
-    //             16'h00F8: sdata_out = arg2_l;
-    //             16'h00D0: sdata_out = ctrl_reg;
-    //             16'h00E8: sdata_out = status_reg;
-    //             16'h00D8: sdata_out = result_h;
-    //             16'h00E0: sdata_out = result_l;
-    //             default:  sdata_out = 32'd0;
-    //         endcase
-    //     end else begin
-    //         sdata_out = 32'd0; // stan neutralny
-    //     end
-    // end
-    
 
     // Automat stanów i obliczenia (reakcja na clk)
     always @(posedge clk or negedge n_reset) begin
