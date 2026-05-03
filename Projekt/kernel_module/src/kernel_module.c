@@ -175,13 +175,21 @@ static int format_fp(u64 val, char *buf, size_t size)
 static ssize_t arg_write(const char __user *ubuf, size_t cnt, loff_t *off, void __iomem *hi, void __iomem *lo)
 {
     char buf[64]; u64 val;
+    u64 val;
+    int ret;
+
     if (cnt >= sizeof(buf)) return -ENOSPC;
     if (copy_from_user(buf, ubuf, cnt)) return -EFAULT;
     buf[cnt] = '\0';
-    if (parse_fp(buf, &val)) return -EINVAL;
+
+    ret = parse_fp(buf, &val);
+    if (ret < 0) return ret; // Zwrócenie błędu z parse_fp (np. -EINVAL, -ERANGE)
+
     iowrite32((u32)(val >> 32), hi);
     iowrite32((u32)(val & 0xFFFFFFFFU), lo);
-    *off += cnt; return cnt;
+
+    *off += cnt;
+    return cnt;
 }
 
 static ssize_t a1_write(struct file *f, const char __user *b, size_t c, loff_t *o)
@@ -191,13 +199,21 @@ static ssize_t a2_write(struct file *f, const char __user *b, size_t c, loff_t *
 
 static ssize_t ctrl_write(struct file *f, const char __user *ubuf, size_t cnt, loff_t *off)
 {
-    char buf[8]; long cmd;
+    char buf[8];
+    long cmd;
+    int ret;
+    
     if (cnt >= sizeof(buf)) return -ENOSPC;
     if (copy_from_user(buf, ubuf, cnt)) return -EFAULT;
     buf[cnt] = '\0';
-    if (kstrtol(buf, 10, &cmd) || (cmd != 0 && cmd != 1)) return -EINVAL;
+
+    ret = kstrtol(buf, 10, &cmd);
+    if (ret < 0) return ret; // nieprawidłowa liczba
+    if (cmd != 0 && cmd != 1) return -EINVAL; // niedozwolona wartość
+    
     iowrite32((u32)cmd, io_ctrl);
-    *off += cnt; return cnt;
+    *off += cnt;
+    return cnt;
 }
 
 static ssize_t status_read(struct file *f, char __user *ubuf, size_t cnt, loff_t *off)

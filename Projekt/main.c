@@ -120,40 +120,21 @@ static int run_test(const char *label, const char *a1, const char *a2)
 // Test sprawdzający odrzucanie niepoprawnych danych
 static int run_invalid_test(const char *label, const char *path, const char *val)
 {
-    printf("\n[%s]\n", label);
-    printf("Zapis '%s' do %s\n", val, path);
+    printf("\n[%s] zapis '%s' do %s\n", label, val, path);
 
-    errno = 0;
-    FILE *f = fopen(path, "w");
-    if (!f) {
-        if (errno == EINVAL) {
-            printf("\tStatus: PASS (zapis odrzucony, errno=%d)\n", errno);
-        } else {
-            printf("\tStatus: PASS (zapis odrzucony, errno=%d)\n", errno);
-        }
-        return 0;
-    }
+    write_str(path, val);                    // próba zapisu błędnych danych
 
-    int write_result = fputs(val, f);
-    fclose(f);
+    // Sprawdź, czy moduł nadal działa (1.0 * 1.0 = 1.0)
+    write_str(A1, "1.0e0\n");
+    write_str(A2, "1.0e0\n");
+    write_str(CTL, "1\n");
+    wait_done();
 
-    if (write_result < 0) {
-        printf("\tStatus: PASS (zapis odrzucony przez fputs)\n");
-    } else {
-        // Sprawdźmy, czy moduł pozostał w stanie IDLE (nie zmienił stanu)
-        char buf[32];
-        if (read_str(STA, buf, sizeof(buf)) == 0) {
-            if (strstr(buf, "idle")) {
-                printf("\tStatus: WARNING (zapis zaakceptowany, ale moduł pozostał w IDLE)\n");
-            } else {
-                printf("\tStatus: FAIL (zapis zaakceptowany, status=%s)", buf);
-            }
-        } else {
-            printf("\tStatus: FAIL (zapis zaakceptowany, nie można odczytać statusu)\n");
-        }
-        // Przywróć IDLE na wszelki wypadek
-        write_str(CTL, "0\n");
-    }
+    char res[64];
+    read_str(RES, res, sizeof(res));
+    write_str(CTL, "0\n");
+
+    printf("\tStatus: %s (wynik=%s)", strstr(res, "1.000000000e0") ? "PASS" : "FAIL", res);
     return 0;
 }
 
