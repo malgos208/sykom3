@@ -174,7 +174,7 @@ static int format_fp(u64 val, char *buf, size_t size)
 
 static ssize_t arg_write(const char __user *ubuf, size_t cnt, loff_t *off, void __iomem *hi, void __iomem *lo)
 {
-    char buf[64]; u64 val;
+    char buf[64];
     u64 val;
     int ret;
 
