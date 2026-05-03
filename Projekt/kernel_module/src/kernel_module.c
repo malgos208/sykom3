@@ -21,8 +21,8 @@ MODULE_VERSION("beta");
 
 // dla funkcji format_fp
 #define TMP_SIZE 32
-#define FRAC_DIGITS 8
-#define OUT_SIZE (FRAC_DIGITS + 3)  // 1 (cyfra) + 1 (kropka) + 8 (ułamkowe) + 1 (terminator) = 11
+#define FRAC_DIGITS 9 // liczba cyfr ułamkowych do wyświetlenia (1 cyfra przed przecinkiem + 9 cyfr = 10 cyfr znaczących)
+#define OUT_SIZE (FRAC_DIGITS + 3)  // wynikowy rozmiar w bajtach: 1 (cyfra) + 1 (kropka) + 10 (ułamkowe) + 1 (terminator) = 12
 
 static void __iomem *base;
 static void __iomem *arg1_h, *arg1_l, *arg2_h, *arg2_l;
@@ -58,7 +58,6 @@ static int parse_fp(const char *buf, u64 *out)
         if (*p == '-') { e_sign = -1; p++; } else if (*p == '+') p++;
         while (isdigit(*p)) {
             exp_e = exp_e * 10 + (*p++ - '0');
-            if (exp_e > 400) return -ERANGE;
         }
         exp_e *= e_sign;
     }
@@ -121,7 +120,7 @@ static int parse_fp(const char *buf, u64 *out)
     return 0;
 }
 
-// X.XXXXXXXXe±D\n
+// X.XXXXXXXXXe±D\n
 static int format_fp(u64 val, char *buf, size_t size)
 {
     int sign, bin_exp, dec_exp = 0, sci_exp, len, i;
@@ -210,7 +209,7 @@ static ssize_t status_read(struct file *f, char __user *ubuf, size_t cnt, loff_t
         case 0:  msg = "idle\n"; break;
         case 1:  msg = "busy\n"; break;
         case 2:  msg = "done\n"; break;
-        default: msg = "unknown/error\n"; break; // Obsługa wartości nieoczekiwanych[cite: 1, 4]
+        default: msg = "unknown/error\n"; break; // Obsługa wartości nieoczekiwanych
     }
 
     len = strlen(msg);
