@@ -89,7 +89,7 @@ static int run_test(const char *label, const char *a1, const char *a2)
 
     printf("\tSurowy wynik: %s", res_buf); // wzięty bezpośrednio z pliku wynikowego
     printf("\tReferencyjna wartość: %-15.10g\n", reference);
-    printf("\t   Obliczona wartość: %-15.10g\n", calculated);
+    printf("\tObliczona wartość: %-15.10g\n", calculated);
     // % specyfikacja formatu:
     // -: wyrównanie do lewej
     // 15: minimalna szerokość wypisywanego string (15 znaków), gdy wynik krótszy wypełniane spacjami z prawej strony
@@ -106,7 +106,7 @@ static int run_test(const char *label, const char *a1, const char *a2)
             printf("\tStatus: FAIL (oczekiwano 0, otrzymano %g)\n", calculated);
     } else {
         double relative_err = (calculated - reference) / reference * 100.0;
-        printf("\tBlad względny : %+0.6f%%", relative_err);
+        printf("\tBłąd względny : %+0.6f%%\n", relative_err);
         if (fabs(relative_err) < 0.001)
             printf("\tStatus: PASS\n");
         else if (fabs(relative_err) < 0.01)
@@ -117,16 +117,89 @@ static int run_test(const char *label, const char *a1, const char *a2)
     return 0;
 }
 
+// Test sprawdzający odrzucanie niepoprawnych danych
+static int run_invalid_test(const char *label, const char *path, const char *val)
+{
+    printf("\n[%s]\n", label);
+    printf("Zapis '%s' do %s\n", val, path);
+
+    errno = 0;
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        if (errno == EINVAL) {
+            printf("\tStatus: PASS (zapis odrzucony, errno=%d)\n", errno);
+        } else {
+            printf("\tStatus: PASS (zapis odrzucony, errno=%d)\n", errno);
+        }
+        return 0;
+    }
+
+    int write_result = fputs(val, f);
+    fclose(f);
+
+    if (write_result < 0) {
+        printf("\tStatus: PASS (zapis odrzucony przez fputs)\n");
+    } else {
+        // Sprawdźmy, czy moduł pozostał w stanie IDLE (nie zmienił stanu)
+        char buf[32];
+        if (read_str(STA, buf, sizeof(buf)) == 0) {
+            if (strstr(buf, "idle")) {
+                printf("\tStatus: WARNING (zapis zaakceptowany, ale moduł pozostał w IDLE)\n");
+            } else {
+                printf("\tStatus: FAIL (zapis zaakceptowany, status=%s)", buf);
+            }
+        } else {
+            printf("\tStatus: FAIL (zapis zaakceptowany, nie można odczytać statusu)\n");
+        }
+        // Przywróć IDLE na wszelki wypadek
+        write_str(CTL, "0\n");
+    }
+    return 0;
+}
+
+// Test sprawdzający próbę odczytu wyniku przed wykonaniem obliczeń
+static int run_early_read_test(void)
+{
+    printf("\n[T_ERR_EARLY: Odczyt wyniku przed obliczeniami]\n");
+
+    // Upewnij się, że moduł jest w IDLE
+    write_str(CTL, "0\n");
+    usleep(5000);
+
+    errno = 0;
+    FILE *f = fopen(RES, "r");
+    if (!f) {
+        if (errno == EAGAIN) {
+            printf("\tStatus: PASS (EAGAIN – wynik niedostępny)\n");
+        } else {
+            printf("\tStatus: PASS (odczyt zablokowany, errno=%d)\n", errno);
+        }
+        return 0;
+    }
+
+    char buf[64];
+    if (fgets(buf, sizeof(buf), f)) {
+        // Jeśli coś odczytaliśmy, sprawdźmy status
+        char sta[32];
+        read_str(STA, sta, sizeof(sta));
+        printf("\tStatus: FAIL (odczytano '%s' przy statusie '%s')\n", buf, sta);
+    } else {
+        printf("\tStatus: PASS (odczyt zablokowany przez fgets)\n");
+    }
+    fclose(f);
+    return 0;
+}
+
 int main(void)
 {
-    printf("FP64 Multiplier Tester\n");
+    printf("Tester mnożenia FP64\n");
 
-    run_test("T1: Mnozenie całkowite", "2.0e0", "5.0e0");
+    run_test("T1: Mnożenie całkowite", "2.0e0", "5.0e0");
     run_test("T2: Ułamki (potęgi 2)", "1.75e0", "1.75e0");
     run_test("T3: Znaki mieszane", "-2.5e0", "4.0e0");
     run_test("T4: Małe wartości", "1.0e-20", "2.0e-20");
-    run_test("T5: Duze wartości", "1.2345e10", "1.0e10");
-    run_test("T6: Mnozenie przez zero", "0.0e0", "123.456e10");
+    run_test("T5: Duże wartości", "1.2345e10", "1.0e10");
+    run_test("T6: Mnożenie przez zero", "0.0e0", "123.456e10");
     run_test("T7: Precyzja mantysy", "1.111111e0", "1.111111e0");
     // Round-trip & znak
     run_test("T8:  Mnożenie przez 1", "3.14159265e0", "1.0e0");
@@ -142,6 +215,77 @@ int main(void)
     run_test("T15: Bardzo małe wartości", "1.0e-100", "1.0e-100");
     // Mieszane znaki z małymi liczbami
     run_test("T16: Mała wartość ujemna * zero", "-1.0e-300", "0.0e0");
+    
+    // === Testy skrajnych przypadków ===
+    // Maksymalny i minimalny wykładnik
+    run_test("T17: Maksymalny wykładnik (1e67000000 * 1.0)",
+            "1.0e67000000", "1.0e0");
+    run_test("T18: Minimalny wykładnik (1e-67000000 * 1.0)",
+            "1.0e-67000000", "1.0e0");
+
+    // Overflow – wynik poza zakresem
+    run_test("T19: Overflow (1e67000000 * 1e67000000)",
+            "1.0e67000000", "1.0e67000000");
+
+    // Underflow – wynik zbyt mały
+    run_test("T20: Underflow (1e-67000000 * 1e-67000000)",
+            "1.0e-67000000", "1.0e-67000000");
+
+    // Maksymalna mantysa
+    run_test("T21: Maksymalna mantysa (1.999999 * 1.0)",
+            "1.999999999e0", "1.0e0");
+
+    // Liczba bliska 1.0
+    run_test("T22: 1.000000001 * 1.000000001",
+            "1.000000001e0", "1.000000001e0");
+
+    // Bardzo mała mantysa
+    run_test("T23: 1.000000001 * 0.999999999",
+            "1.000000001e0", "0.999999999e0");
+
+    // Duża liczba z dużą mantysą
+    run_test("T24: 1.999999e20 * 1.999999e20",
+            "1.999999e20", "1.999999e20");
+
+    // Mała liczba z małą mantysą
+    run_test("T25: 1.000001e-20 * 1.000001e-20",
+            "1.000001e-20", "1.000001e-20");
+
+    // Zero z ujemną mantysą (ujemne zero)
+    run_test("T26: -0.0 * -0.0", "-0.0e0", "-0.0e0");
+
+    // Przemienność z zerem
+    run_test("T27: 0 * -5.0", "0.0e0", "-5.0e0");
+
+    // Dokładność – potęgi 2 (bezstratne w binarnym)
+    run_test("T28: 2.0^10 * 2.0^10 = 2.0^20",
+            "1.024e3", "1.024e3");
+
+    // Liczby z wieloma cyframi znaczącymi
+    run_test("T29: 1.23456789e0 * 9.87654321e0",
+            "1.23456789e0", "9.87654321e0");
+
+    // Symetria znaków
+    run_test("T30: -1.0 * -1.0 = 1.0", "-1.0e0", "-1.0e0");
+    run_test("T31: -1.0 * 1.0 = -1.0", "-1.0e0", "1.0e0");
+    run_test("T32: 1.0 * -1.0 = -1.0", "1.0e0", "-1.0e0");
+
+    // Testy błędnych danych
+    printf("\n--- Testy błędnych danych ---\n");
+
+    // Przywróć IDLE
+    write_str(CTL, "0\n");
+    usleep(5000);
+
+    run_early_read_test();
+
+    run_invalid_test("T_ERR1: Tekst zamiast liczby", A1, "abc\n");
+    run_invalid_test("T_ERR2: Pusty string", A1, "\n");
+    run_invalid_test("T_ERR3: Przepełniony wykładnik", A1, "1.0e999\n");
+    run_invalid_test("T_ERR4: Błędny znak", A1, "++1.0e0\n");
+    run_invalid_test("T_ERR5: Dwa znaki dziesiętne", A1, "1.2.3\n");
+    run_invalid_test("T_ERR6: Błędna wartość ctrl (2)", CTL, "2\n");
+    run_invalid_test("T_ERR7: Błędna wartość ctrl (tekst)", CTL, "start\n");
 
     printf("\nTesty zakoczone.\n");
     return 0;
